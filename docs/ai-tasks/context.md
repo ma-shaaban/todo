@@ -1,5 +1,5 @@
 ---
-focus: 008 activity+docs shipping; 001-007 DONE and staging-verified (main-d9df618, PWA live); next: staging E2E → prod release → scaffold eval
+focus: ALL DONE — v0.2.0 LIVE IN PRODUCTION (todo.nezam.site). 10 PRs, 107 tests, staging E2E passed (incl. live reminder fire), OOM found+fixed, scaffold evaluation delivered to owner (2026-07-19)
 lastVerified: 2026-07-19
 ---
 
