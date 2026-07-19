@@ -39,3 +39,21 @@ def test_next_due_future_due_advances_once():
     now = dt(2026, 7, 19, 12, 0)
     due = dt(2026, 7, 20, 9, 0)
     assert next_due(due, "daily", now) == dt(2026, 7, 21, 9, 0)
+
+
+def test_monthly_anchor_returns_to_month_end():
+    # A Jan-31 series squeezes through February but must come back to the 31st.
+    anchor = 31
+    jan = dt(2026, 1, 31, 9, 0)
+    feb = next_due(jan, "monthly", dt(2026, 2, 1), anchor)
+    assert feb == dt(2026, 2, 28, 9, 0)
+    mar = next_due(feb, "monthly", dt(2026, 3, 1), anchor)
+    assert mar == dt(2026, 3, 31, 9, 0)
+    # Without the anchor the series would drift to the 28th forever.
+    assert next_due(feb, "monthly", dt(2026, 3, 1)) == dt(2026, 3, 28, 9, 0)
+
+
+def test_monthly_anchor_survives_catchup_loop():
+    # Overdue Jan-31 monthly completed in July → next is July 31, not the 28th.
+    jan = dt(2026, 1, 31, 9, 0)
+    assert next_due(jan, "monthly", dt(2026, 7, 19, 12, 0), 31) == dt(2026, 7, 31, 9, 0)

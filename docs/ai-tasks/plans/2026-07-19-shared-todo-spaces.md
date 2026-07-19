@@ -4,7 +4,7 @@
 
 **Goal:** Turn the scaffolded demo into a shared-spaces todo app with reminders (web push), invite links, and PWA install — delivered as 8 small PRs through the real CI → staging pipeline, then a production release.
 
-**Architecture:** FastAPI + SQLAlchemy 2.0 (sync ORM, psycopg3) behind the scaffold's single-image contract; routers in `backend/app/routers/*` included from `main.py` above the SPA catch-all; Alembic migrations chained off `0001`; asyncio reminder poller in FastAPI lifespan with atomic DB claims; React 19 + react-router 8 SPA; hand-rolled service worker + manifest for PWA/push. Spec: `docs/superpowers/specs/2026-07-19-shared-todo-spaces-design.md`.
+**Architecture:** FastAPI + SQLAlchemy 2.0 (sync ORM, psycopg3) behind the scaffold's single-image contract; routers in `backend/app/routers/*` included from `main.py` above the SPA catch-all; Alembic migrations chained off `0001`; asyncio reminder poller in FastAPI lifespan with atomic DB claims; React 19 + react-router 8 SPA; hand-rolled service worker + manifest for PWA/push. Spec: `docs/ai-tasks/specs/2026-07-19-shared-todo-spaces-design.md`.
 
 **Tech Stack (pins verified against PyPI/npm 2026-07-19):** argon2-cffi==25.1.0, pywebpush==2.3.0, pytest==9.1.1, httpx==0.28.1 (backend adds); react-router@^8.2.0, vitest@^4.1.10 (frontend adds). Test DB: postgres:16-alpine (Docker locally on port 5433, service container in CI). CI Python = 3.12 (matches runtime image).
 

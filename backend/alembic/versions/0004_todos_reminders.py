@@ -23,6 +23,8 @@ def upgrade() -> None:
         sa.Column("priority", sa.SmallInteger(), nullable=False, server_default="0"),
         sa.Column("assignee_id", sa.Uuid(), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("recurrence", sa.Text(), nullable=True),
+        sa.Column("recur_anchor_day", sa.SmallInteger(), nullable=True),
+        sa.Column("spawned_from", sa.Uuid(), sa.ForeignKey("todos.id", ondelete="SET NULL"), nullable=True),
         sa.Column("position", sa.Double(), nullable=False, server_default="0"),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_by", sa.Uuid(), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),

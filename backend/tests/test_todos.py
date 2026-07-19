@@ -199,6 +199,74 @@ def test_my_tasks_across_spaces(client, make_client):
     assert {t["title"] for t in my} == {"work-thing"}
 
 
+def test_fired_reminder_config_survives_recurrence_spawn(client):
+    # Normal lifecycle: reminder fires, THEN the user completes the todo.
+    # The next occurrence must inherit the reminder configuration.
+    import sqlalchemy as sa
+
+    from tests.conftest import test_engine
+
+    make_user(client, "ana@example.com")
+    space = create_space(client)
+    due = in_hours(5)
+    todo = add_todo(
+        client, space["id"], due_at=iso(due), recurrence="daily",
+        reminders=[iso(due - timedelta(hours=1))],
+    )
+    with test_engine().begin() as conn:
+        conn.execute(sa.text("UPDATE reminders SET fired_at = now()"))
+    nxt = client.post(f"/api/todos/{todo['id']}/complete").json()["next"]
+    assert len(nxt["reminders"]) == 1
+    assert nxt["reminders"][0]["fired_at"] is None
+
+
+def test_reopen_recurring_retracts_spawned_successor(client):
+    make_user(client, "ana@example.com")
+    space = create_space(client)
+    todo = add_todo(
+        client, space["id"], title="water", due_at=iso(in_hours(5)), recurrence="daily"
+    )
+    assert client.post(f"/api/todos/{todo['id']}/complete").json()["next"] is not None
+    client.post(f"/api/todos/{todo['id']}/reopen")
+    items = client.get(f"/api/spaces/{space['id']}/todos").json()["items"]
+    assert [t["id"] for t in items] == [todo["id"]]  # successor retracted
+    # Completing again spawns exactly one successor — no duplicate series.
+    assert client.post(f"/api/todos/{todo['id']}/complete").json()["next"] is not None
+    items = client.get(f"/api/spaces/{space['id']}/todos").json()["items"]
+    assert len(items) == 1
+
+
+def test_monthly_recurrence_keeps_month_end_anchor(client):
+    # Overdue Jan-31 monthly todo completed in July → next due July 31.
+    make_user(client, "ana@example.com")
+    space = create_space(client)
+    todo = add_todo(
+        client, space["id"], due_at="2026-01-31T09:00:00+00:00", recurrence="monthly"
+    )
+    nxt = client.post(f"/api/todos/{todo['id']}/complete").json()["next"]
+    assert nxt["due_at"].startswith("2026-07-31")
+
+
+def test_nan_position_rejected(client):
+    # Python's json parser accepts the NaN/Infinity literals, so they reach
+    # the endpoint — which must answer 400, not crash serialization.
+    make_user(client, "ana@example.com")
+    space = create_space(client)
+    for literal in ("NaN", "Infinity"):
+        r = client.post(
+            f"/api/spaces/{space['id']}/todos",
+            content='{"title": "x", "position": ' + literal + "}",
+            headers={"content-type": "application/json"},
+        )
+        assert r.status_code == 400, r.text
+
+
+def test_status_all_removed(client):
+    make_user(client, "ana@example.com")
+    space = create_space(client)
+    assert client.get(f"/api/spaces/{space['id']}/todos?status=all").status_code == 400
+
+
 def test_reminders_rejected_in_past_or_naive(client):
     make_user(client, "ana@example.com")
     space = create_space(client)

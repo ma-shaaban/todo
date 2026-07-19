@@ -85,6 +85,14 @@ class Todo(Base):
         sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     recurrence: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    # Day-of-month the monthly series is anchored to (a Jan-31 series must
+    # return to the 31st after squeezing through February).
+    recur_anchor_day: Mapped[int | None] = mapped_column(sa.SmallInteger, nullable=True)
+    # The occurrence this todo was spawned from (recurrence chain) — lets
+    # reopen retract the successor instead of leaving a duplicate series.
+    spawned_from: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("todos.id", ondelete="SET NULL"), nullable=True
+    )
     position: Mapped[float] = mapped_column(sa.Double, default=0.0, server_default="0")
     completed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     completed_by: Mapped[uuid.UUID | None] = mapped_column(

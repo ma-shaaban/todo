@@ -1,10 +1,12 @@
 """Todos: CRUD, completion (with recurring spawn), reminders, my-tasks."""
 
+import math
 import uuid
 from datetime import timedelta, timezone
 
 import sqlalchemy as sa
 from fastapi import APIRouter, HTTPException
+from sqlalchemy.exc import IntegrityError
 
 from app import models
 from app.db import utcnow
@@ -19,6 +21,7 @@ _MAX_TITLE = 500
 _MAX_NOTES = 5000
 _MAX_REMINDERS = 20
 _DONE_CAP = 200
+_OPEN_CAP = 500
 
 
 # ── validation helpers ────────────────────────────────────────────────────
@@ -43,6 +46,13 @@ def _clean_priority(priority: int) -> int:
     if not 0 <= priority <= 3:
         raise HTTPException(status_code=400, detail="Priority must be between 0 and 3")
     return priority
+
+
+def _clean_position(position: float) -> float:
+    # JSON NaN/Infinity survive parsing but crash response serialization.
+    if not math.isfinite(position):
+        raise HTTPException(status_code=400, detail="Position must be a finite number")
+    return position
 
 
 def _clean_recurrence(recurrence: str | None) -> str | None:
@@ -164,17 +174,15 @@ def list_todos(space_id: str, user: CurrentUser, db: DbSession, status: str = "o
     get_membership(db, sid, user)
     q = db.query(models.Todo).filter(models.Todo.space_id == sid)
     if status == "open":
-        q = q.filter(models.Todo.completed_at.is_(None)).order_by(*_OPEN_ORDER)
+        q = q.filter(models.Todo.completed_at.is_(None)).order_by(*_OPEN_ORDER).limit(_OPEN_CAP)
     elif status == "done":
         q = (
             q.filter(models.Todo.completed_at.is_not(None))
             .order_by(sa.desc(models.Todo.completed_at))
             .limit(_DONE_CAP)
         )
-    elif status == "all":
-        q = q.order_by(*_OPEN_ORDER)
     else:
-        raise HTTPException(status_code=400, detail="status must be open, done or all")
+        raise HTTPException(status_code=400, detail="status must be open or done")
     return {"items": _serialize_todos(db, q.all())}
 
 
@@ -195,12 +203,19 @@ def create_todo(space_id: str, body: TodoCreate, user: CurrentUser, db: DbSessio
         priority=_clean_priority(body.priority),
         assignee_id=_clean_assignee(db, sid, body.assignee_id),
         recurrence=recurrence,
-        position=body.position,
+        recur_anchor_day=due_at.day if (recurrence == "monthly" and due_at) else None,
+        position=_clean_position(body.position),
         created_by=user.id,
     )
     db.add(todo)
-    db.flush()
-    for remind_at in _clean_reminders(body.reminders, now):
+    reminders = _clean_reminders(body.reminders, now)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        # The space was deleted between the membership check and the insert.
+        raise HTTPException(status_code=404, detail="Not found")
+    for remind_at in reminders:
         db.add(models.Reminder(todo_id=todo.id, remind_at=remind_at))
     db.flush()
     return _serialize_todos(db, [todo])[0]
@@ -227,16 +242,32 @@ def patch_todo(todo_id: str, body: TodoPatch, user: CurrentUser, db: DbSession):
     if "recurrence" in fields:
         todo.recurrence = _clean_recurrence(body.recurrence)
     if "position" in fields and body.position is not None:
-        todo.position = body.position
+        todo.position = _clean_position(body.position)
     if todo.recurrence and todo.due_at is None:
         raise HTTPException(status_code=400, detail="Repeating todos need a due date")
+    if "due_at" in fields or "recurrence" in fields:
+        # Re-anchor the monthly series to the (possibly new) due day.
+        todo.recur_anchor_day = (
+            todo.due_at.day if (todo.recurrence == "monthly" and todo.due_at) else None
+        )
 
     if "reminders" in fields:
-        # Replace only the un-fired reminders; fired ones are history.
+        new_reminders = _clean_reminders(body.reminders or [], now)
+        # Replace only the un-fired reminders; fired ones are history — but
+        # the 20-reminder cap holds for the TOTAL per todo, not per request.
+        fired_count = (
+            db.query(models.Reminder)
+            .filter(models.Reminder.todo_id == todo.id, models.Reminder.fired_at.is_not(None))
+            .count()
+        )
+        if fired_count + len(new_reminders) > _MAX_REMINDERS:
+            raise HTTPException(
+                status_code=400, detail=f"At most {_MAX_REMINDERS} reminders per todo"
+            )
         db.query(models.Reminder).filter(
             models.Reminder.todo_id == todo.id, models.Reminder.fired_at.is_(None)
         ).delete()
-        for remind_at in _clean_reminders(body.reminders or [], now):
+        for remind_at in new_reminders:
             db.add(models.Reminder(todo_id=todo.id, remind_at=remind_at))
     db.flush()
     return _serialize_todos(db, [todo])[0]
@@ -265,7 +296,7 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession):
 
     next_out = None
     if claimed is not None and todo.recurrence and todo.due_at:
-        new_due = next_due(todo.due_at, todo.recurrence, now)
+        new_due = next_due(todo.due_at, todo.recurrence, now, todo.recur_anchor_day)
         nxt = models.Todo(
             space_id=todo.space_id,
             title=todo.title,
@@ -274,17 +305,24 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession):
             priority=todo.priority,
             assignee_id=todo.assignee_id,
             recurrence=todo.recurrence,
+            recur_anchor_day=todo.recur_anchor_day,
+            spawned_from=todo.id,
             position=todo.position,
             created_by=todo.created_by,
         )
         db.add(nxt)
-        db.flush()
-        # Clone un-fired reminders preserving their offset from the due date;
-        # drop any that would land in the past (they'd fire instantly).
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            # The space was deleted mid-flight; the completion stamp is gone
+            # with it, so answer like any other vanished space.
+            raise HTTPException(status_code=404, detail="Not found")
+        # Clone ALL reminders (fired ones included — a fired reminder is
+        # exactly the configuration the next occurrence needs) preserving
+        # their offset from the due date; drop any landing in the past.
         for rem in (
-            db.query(models.Reminder)
-            .filter(models.Reminder.todo_id == todo.id, models.Reminder.fired_at.is_(None))
-            .all()
+            db.query(models.Reminder).filter(models.Reminder.todo_id == todo.id).all()
         ):
             shifted = new_due - (todo.due_at - rem.remind_at)
             if shifted > now:
@@ -298,6 +336,21 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession):
 @router.post("/todos/{todo_id}/reopen")
 def reopen_todo(todo_id: str, user: CurrentUser, db: DbSession):
     todo = _get_todo_for_member(db, todo_id, user)
+    # Undo the recurrence spawn too: completing accidentally and reopening
+    # must not leave a duplicate series. Only a still-open, un-completed
+    # successor is retracted — one that was already completed is history.
+    if todo.recurrence:
+        db.query(models.Reminder).filter(
+            models.Reminder.todo_id.in_(
+                sa.select(models.Todo.id).where(
+                    models.Todo.spawned_from == todo.id,
+                    models.Todo.completed_at.is_(None),
+                )
+            )
+        ).delete(synchronize_session=False)
+        db.query(models.Todo).filter(
+            models.Todo.spawned_from == todo.id, models.Todo.completed_at.is_(None)
+        ).delete(synchronize_session=False)
     todo.completed_at = None
     todo.completed_by = None
     db.flush()
@@ -327,6 +380,7 @@ def my_todos(user: CurrentUser, db: DbSession):
             ),
         )
         .order_by(*_OPEN_ORDER)
+        .limit(_OPEN_CAP)
         .all()
     )
     spaces = {
