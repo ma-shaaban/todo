@@ -15,6 +15,11 @@ on:
     # Label-based filtering is not natively supported in `on.pull_request`
     # triggers; the label condition is enforced in the preview-build job itself
     # via `if: contains(github.event.pull_request.labels.*.name, 'preview')`.
+  # Manual retrigger: GitHub occasionally drops a push event entirely (seen
+  # 2026-07-19: a merge to main produced no push run, so nothing built or
+  # deployed). Dispatching on main behaves exactly like a push to main —
+  # build + staging writeback. `gh workflow run ci.yaml --ref main`
+  workflow_dispatch:
 
 permissions:
   contents: write # push the deploy PR branch (deploy/staging-<version>)
@@ -126,8 +131,11 @@ jobs:
       # workflow (paths-ignore on deploy/staging/kustomization.yaml is a second
       # guard, since the PR only touches that file).
       - name: Update staging image tag
-        # Only on push to main (not pull_request events, not tags).
-        if: github.event_name == 'push' && github.ref_type == 'branch'
+        # Only on push to main or a manual dispatch on main (not
+        # pull_request events, not tags — tag refs never match).
+        if: >
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.ref == 'refs/heads/main'
         env:
           VERSION: ${{ steps.ref.outputs.version }}
         run: |
@@ -135,7 +143,9 @@ jobs:
 
       - name: Open staging deploy PR
         id: deploy_pr
-        if: github.event_name == 'push' && github.ref_type == 'branch'
+        if: >
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.ref == 'refs/heads/main'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -166,7 +176,8 @@ jobs:
       # protectDefaultBranch in the create-app scaffolder template.
       - name: Merge staging deploy PR (gate suspended — ADR-028)
         if: >
-          github.event_name == 'push' && github.ref_type == 'branch' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.ref == 'refs/heads/main' &&
           steps.deploy_pr.outputs.pull-request-number
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
