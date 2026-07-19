@@ -160,6 +160,63 @@ def test_recurrence_spawns_fresh_rows(client, make_client):
     assert all(a["completed_at"] is None for a in nxt["assignees"])
 
 
+def test_stuck_rollup_self_heals(client, make_client):
+    """All boxes checked but the parent open (the pre-lock race artifact):
+    any assignee's next tap re-evaluates the roll-up and completes it."""
+    import sqlalchemy as sa
+
+    from tests.conftest import test_engine
+
+    space, ana, bob, _ = make_pair(client, make_client)
+    todo = add_group_todo(client, space["id"], [ana["id"], bob["id"]])
+    client.post(f"/api/todos/{todo['id']}/complete")
+    # Forge the stuck state: Bob's row checked directly, parent untouched.
+    with test_engine().begin() as conn:
+        conn.execute(sa.text("UPDATE todo_assignees SET completed_at = now()"))
+    res = client.post(f"/api/todos/{todo['id']}/complete").json()
+    assert res["completed"]["completed_at"] is not None
+
+
+def test_patch_cannot_set_single_assignee_on_group_todo(client, make_client):
+    space, ana, bob, _ = make_pair(client, make_client)
+    todo = add_group_todo(client, space["id"], [ana["id"]])
+    r = client.patch(f"/api/todos/{todo['id']}", json={"assignee_id": bob["id"]})
+    assert r.status_code == 400
+    # Explicit null (what the editor always sends) is a tolerated no-op.
+    r = client.patch(f"/api/todos/{todo['id']}", json={"assignee_id": None, "title": "Renamed"})
+    assert r.status_code == 200
+    assert r.json()["title"] == "Renamed"
+    assert r.json()["assignee"] is None
+
+
+def test_recurrence_clone_excludes_ex_members(client, make_client):
+    space, ana, bob, bob_c = make_pair(client, make_client)
+    todo = add_group_todo(
+        client, space["id"], [ana["id"], bob["id"]],
+        due_at=iso(in_hours(1)), recurrence="daily",
+    )
+    # Bob checks his box, then is kicked (his checked row stays as history).
+    bob_c.post(f"/api/todos/{todo['id']}/complete")
+    client.delete(f"/api/spaces/{space['id']}/members/{bob['id']}")
+    # Ana finishes → successor must carry only Ana, not the ghost of Bob.
+    res = client.post(f"/api/todos/{todo['id']}/complete").json()
+    assert res["completed"]["completed_at"] is not None
+    assert [a["id"] for a in res["next"]["assignees"]] == [ana["id"]]
+
+
+def test_kicking_sole_unchecked_assignee_leaves_usable_todo(client, make_client):
+    space, ana, bob, _ = make_pair(client, make_client)
+    todo = add_group_todo(client, space["id"], [bob["id"]], title="Bob's chore")
+    client.delete(f"/api/spaces/{space['id']}/members/{bob['id']}")
+    # Zero assignee rows remain → it becomes a normal shared todo, not a
+    # zombie nobody can complete.
+    items = client.get(f"/api/spaces/{space['id']}/todos").json()["items"]
+    zombie = next(t for t in items if t["id"] == todo["id"])
+    assert zombie["completion_mode"] == "any"
+    res = client.post(f"/api/todos/{todo['id']}/complete").json()
+    assert res["completed"]["completed_at"] is not None
+
+
 def test_reminder_targets_only_unchecked(client, make_client):
     import sqlalchemy as sa
 

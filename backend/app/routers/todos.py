@@ -148,6 +148,20 @@ def roll_up_orphaned_each_todos(db, space_id, now) -> None:
             .where(models.Todo.id == tid, models.Todo.completed_at.is_(None))
             .values(completed_at=now, completed_by=None)
         )
+    # A different orphan: the removed member held the ONLY rows and none
+    # were checked, so nothing remains for anyone to check — an 'each' todo
+    # with zero rows can never complete. Carry on as a normal shared todo.
+    db.execute(
+        sa.update(models.Todo)
+        .where(
+            models.Todo.space_id == space_id,
+            models.Todo.completion_mode == "each",
+            models.Todo.completed_at.is_(None),
+            ~sa.exists().where(models.TodoAssignee.todo_id == models.Todo.id),
+        )
+        .values(completion_mode="any")
+        .execution_options(synchronize_session=False)
+    )
 
 
 def _clean_reminders(reminders, now):
@@ -366,10 +380,21 @@ def patch_todo(
     if "priority" in fields:
         todo.priority = _clean_priority(body.priority if body.priority is not None else 0)
     if "assignee_id" in fields:
-        previous_assignee = todo.assignee_id
-        todo.assignee_id = _clean_assignee(db, todo.space_id, body.assignee_id)
-        if todo.assignee_id and todo.assignee_id != previous_assignee:
-            _notify_assignment(db, background, todo, user)
+        if todo.completion_mode == "each":
+            # The legacy single-assignee slot stays empty on group todos —
+            # setting it would poison My Tasks and fire a false "assigned
+            # you" push at someone who has no box to check. Explicit null
+            # is tolerated (the editor always sends it).
+            if body.assignee_id is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="This is a group todo — everyone assigned checks off their own",
+                )
+        else:
+            previous_assignee = todo.assignee_id
+            todo.assignee_id = _clean_assignee(db, todo.space_id, body.assignee_id)
+            if todo.assignee_id and todo.assignee_id != previous_assignee:
+                _notify_assignment(db, background, todo, user)
     if "recurrence" in fields:
         todo.recurrence = _clean_recurrence(body.recurrence)
     if "position" in fields and body.position is not None:
@@ -418,13 +443,20 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: Ba
     now = utcnow()
 
     if todo.completion_mode == "each":
-        # Check off MY row (atomic — double taps claim nothing the second
-        # time); the parent completes only when the last row is checked.
+        # Check off MY row; the parent completes only when the last row is
+        # checked. The roll-up decision (count-then-claim) is write-skew
+        # prone under READ COMMITTED — two "last" checkers would each see
+        # the other's row still unchecked and BOTH skip the parent claim —
+        # so every roll-up decision serializes on the parent todo row lock
+        # (complete, reopen, and member-removal cleanup all take it).
         my_row = db.get(models.TodoAssignee, (todo.id, user.id))
         if my_row is None:
             raise HTTPException(
                 status_code=400, detail="Only its assignees can check off this todo"
             )
+        db.execute(
+            sa.select(models.Todo.id).where(models.Todo.id == todo.id).with_for_update()
+        ).first()
         row_claimed = db.execute(
             sa.update(models.TodoAssignee)
             .where(
@@ -437,6 +469,9 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: Ba
         ).first()
         if row_claimed is not None:
             record(db, todo.space_id, user, "todo_checked", todo=todo, title=todo.title)
+        # Deliberately NOT gated on row_claimed: a tap from an already-
+        # checked assignee re-evaluates the roll-up, healing any todo that
+        # ended up all-checked-but-open.
         claimed = (
             db.execute(
                 sa.update(models.Todo)
@@ -444,7 +479,7 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: Ba
                 .values(completed_at=now, completed_by=user.id)
                 .returning(models.Todo.id)
             ).first()
-            if row_claimed is not None and _no_unchecked_rows(db, todo.id)
+            if _no_unchecked_rows(db, todo.id)
             else None
         )
         db.expire(todo)
@@ -484,11 +519,30 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: Ba
             # The space was deleted mid-flight; the completion stamp is gone
             # with it, so answer like any other vanished space.
             raise HTTPException(status_code=404, detail="Not found")
-        # 'each' series: the next occurrence starts with everyone unchecked.
-        for row in (
-            db.query(models.TodoAssignee).filter(models.TodoAssignee.todo_id == todo.id).all()
-        ):
-            db.add(models.TodoAssignee(todo_id=nxt.id, user_id=row.user_id))
+        # 'each' series: the next occurrence starts with everyone unchecked —
+        # but only CURRENT members. A kicked member's checked row stays on
+        # the old occurrence as history; cloning it would put an unchecked
+        # box on the successor that nobody could ever check.
+        if todo.completion_mode == "each":
+            member_ids = {
+                m.user_id
+                for m in db.query(models.SpaceMember)
+                .filter(models.SpaceMember.space_id == todo.space_id)
+                .all()
+            }
+            cloned = 0
+            for row in (
+                db.query(models.TodoAssignee)
+                .filter(models.TodoAssignee.todo_id == todo.id)
+                .all()
+            ):
+                if row.user_id in member_ids:
+                    db.add(models.TodoAssignee(todo_id=nxt.id, user_id=row.user_id))
+                    cloned += 1
+            if cloned == 0:
+                # Every original assignee left the space: a rowless 'each'
+                # todo is uncompletable — carry on as a normal shared todo.
+                nxt.completion_mode = "any"
         # Clone ALL reminders (fired ones included — a fired reminder is
         # exactly the configuration the next occurrence needs) preserving
         # their offset from the due date; drop any landing in the past.
@@ -535,6 +589,14 @@ def reopen_todo(todo_id: str, user: CurrentUser, db: DbSession):
             raise HTTPException(
                 status_code=400, detail="Only its assignees can uncheck this todo"
             )
+        # Same per-todo serialization as complete: unchecking while someone
+        # else's roll-up is deciding must not complete a todo with a fresh
+        # unchecked row. Refresh after the lock — the parent may have
+        # completed while we waited.
+        db.execute(
+            sa.select(models.Todo.id).where(models.Todo.id == todo.id).with_for_update()
+        ).first()
+        db.refresh(todo)
         my_row.completed_at = None
         # Fall through: an accidentally-completed parent reopens (and its
         # recurrence successor is retracted) exactly like an 'any' todo.
