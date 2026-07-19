@@ -5,7 +5,7 @@ CRUD with membership-scoped visibility, due dates, priorities 0–3, assignees
 occurrence with offset-preserved reminders), My Tasks across spaces, open-todo
 counts on the spaces list, atomic completion claim.
 
-- **Status:** IN PROGRESS on `feat/todos` — implementation green (61 tests),
+- **Status:** DONE (PR #11, merged as `0f31171`; staging verified). All 5 review majors fixed with regression tests (68 total).
   adversarial review returned 5 confirmed majors now being fixed:
   1. recurring todos lose reminders once one fires (clone must include fired ones)
   2. reopen of a completed recurring todo orphans/duplicates the spawned successor

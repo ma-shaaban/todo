@@ -8,7 +8,7 @@ import secrets
 import uuid
 from datetime import timedelta
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from app import models
@@ -296,11 +296,17 @@ def invite_preview(code: str, db: DbSession):
 
 
 @router.post("/invites/{code}/accept")
-def accept_invite(code: str, user: CurrentUser, db: DbSession):
+def accept_invite(code: str, user: CurrentUser, db: DbSession, background: BackgroundTasks):
     invite = _load_invite(db, code)
     if invite.revoked_at is not None or invite.expires_at <= utcnow():
         raise HTTPException(status_code=410, detail="This invite link is no longer valid")
     if db.get(models.SpaceMember, (invite.space_id, user.id)) is None:
+        existing_members = [
+            m.user_id
+            for m in db.query(models.SpaceMember)
+            .filter(models.SpaceMember.space_id == invite.space_id)
+            .all()
+        ]
         db.add(models.SpaceMember(space_id=invite.space_id, user_id=user.id, role="member"))
         try:
             db.flush()
@@ -312,4 +318,19 @@ def accept_invite(code: str, user: CurrentUser, db: DbSession):
                 raise HTTPException(
                     status_code=410, detail="This invite link is no longer valid"
                 )
+        else:
+            space = db.get(models.Space, invite.space_id)
+            if space is not None:
+                from app.services.notify import notify_users, send_pushes
+
+                prepared = notify_users(
+                    db,
+                    existing_members,
+                    type="joined",
+                    title=f"{user.display_name} joined {space.name}",
+                    space_id=space.id,
+                    url=f"/spaces/{space.id}",
+                    exclude=user.id,
+                )
+                background.add_task(send_pushes, prepared)
     return {"space_id": str(invite.space_id)}

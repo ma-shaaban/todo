@@ -42,6 +42,18 @@ spec:
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef: { name: app-db, key: password }
+            # Web-push VAPID keys from the platform `app-push` Secret
+            # (sops-managed in the platform repo). optional: the app boots
+            # without them and falls back to a dev keypair in app_meta.
+            - name: VAPID_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef: { name: app-push, key: VAPID_PUBLIC_KEY, optional: true }
+            - name: VAPID_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: { name: app-push, key: VAPID_PRIVATE_KEY, optional: true }
+            - name: VAPID_SUBJECT
+              valueFrom:
+                secretKeyRef: { name: app-push, key: VAPID_SUBJECT, optional: true }
           ports:
             - containerPort: 8080
           readinessProbe:

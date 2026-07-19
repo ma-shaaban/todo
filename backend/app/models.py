@@ -120,6 +120,41 @@ class Reminder(Base):
     fired_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
 
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    endpoint: Mapped[str] = mapped_column(sa.Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(sa.Text)
+    auth: Mapped[str] = mapped_column(sa.Text)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=utcnow, server_default=sa.func.now()
+    )
+    failed_count: Mapped[int] = mapped_column(sa.Integer, default=0, server_default="0")
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    type: Mapped[str] = mapped_column(sa.Text)  # reminder | assigned | completed | joined
+    title: Mapped[str] = mapped_column(sa.Text)
+    body: Mapped[str] = mapped_column(sa.Text, default="", server_default="")
+    url: Mapped[str] = mapped_column(sa.Text, default="/", server_default="/")
+    space_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid, nullable=True)
+    todo_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid, nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=utcnow, server_default=sa.func.now()
+    )
+
+
 class UserSession(Base):
     __tablename__ = "sessions"
 
