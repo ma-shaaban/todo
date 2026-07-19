@@ -52,6 +52,26 @@ def client(migrated_db):
         yield c
 
 
+@pytest.fixture()
+def make_client(migrated_db):
+    """Extra clients with independent cookie jars — for multi-user tests."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    clients = []
+
+    def _make():
+        c = TestClient(app)
+        c.__enter__()
+        clients.append(c)
+        return c
+
+    yield _make
+    for c in clients:
+        c.__exit__(None, None, None)
+
+
 @pytest.fixture(autouse=True)
 def clean_tables(migrated_db):
     yield

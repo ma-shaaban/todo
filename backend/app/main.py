@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.routers import auth as auth_router
+from app.routers import spaces as spaces_router
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,7 @@ def healthz():
 # Feature routers — registered here, above the SPA catch-all, per the house
 # rule that API routes precede it (implementations live in app/routers/).
 app.include_router(auth_router.router)
+app.include_router(spaces_router.router)
 
 
 # SPA serving — registered last so every /api/* + /healthz route above wins.

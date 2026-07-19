@@ -20,6 +20,10 @@ class ProfilePatch(BaseModel):
     timezone: str | None = None
 
 
+class SpaceIn(BaseModel):
+    name: str
+
+
 def user_out(user) -> dict:
     return {
         "id": str(user.id),
