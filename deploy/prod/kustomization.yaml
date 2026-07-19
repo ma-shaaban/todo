@@ -6,7 +6,7 @@ images:
   - name: ghcr.io/ma-shaaban/todo
     # Pinned by scripts/release.sh (release: vX.Y.Z commit + tag). Prod ships
     # ONLY tagged releases — Flux tracks semver tags, not main.
-    newTag: 0.2.2
+    newTag: 0.3.0
 patches:
   - patch: |-
       apiVersion: gateway.networking.k8s.io/v1
