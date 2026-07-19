@@ -1,5 +1,5 @@
 ---
-focus: PRAYER SPACE ON STAGING awaiting owner test (main-f93bcc9) — group todos (015, PR #35) + prayer automation (016, PR #36) merged, staging E2E green (real AlAdhan fetch, per-person checks, roll-up). Reviews confirmed+fixed 9 bugs incl. a roll-up race and the AlAdhan 302. PROD HELD until owner verifies. v0.2.2 remains in prod.
+focus: v0.3.0 LIVE IN PRODUCTION (todo.nezam.site) — group todos (015), prayer automation (016), space templates UX (017, owner ruling) all shipped + owner-approved release. 128 tests. Reviews caught 13 bugs pre-merge this phase (roll-up race, AlAdhan 302, midnight Isha, provider locking). Next: whatever the owner asks.
 lastVerified: 2026-07-19
 ---
 
