@@ -19,11 +19,15 @@ def fake_aladhan(monkeypatch):
     so reminder creation is deterministic: two per prayer)."""
     from app.services.automations import prayers
 
-    state = {"date": (datetime.now(UTC) + timedelta(days=1)).date(), "calls": 0}
+    state = {
+        "date": (datetime.now(UTC) + timedelta(days=1)).date(),
+        "times": dict(TIMES),
+        "calls": 0,
+    }
 
     def fake(city, country, method):
         state["calls"] += 1
-        return {"date": state["date"], "tz": CAIRO, "times": dict(TIMES)}
+        return {"date": state["date"], "tz": CAIRO, "times": dict(state["times"])}
 
     monkeypatch.setattr(prayers, "fetch_timings", fake)
     return state
@@ -160,19 +164,40 @@ def test_automation_permissions_and_validation(client, make_client, fake_aladhan
     assert len(client.get(f"/api/spaces/{space['id']}/todos").json()["items"]) == 5
 
 
-def test_aladhan_failure_is_contained(client, monkeypatch):
+def test_aladhan_failure_handling(client, fake_aladhan, monkeypatch):
     from app.services.automations import prayers
     from app.services.scheduler import automation_tick_once
 
     make_user(client, "ana@example.com")
     space = create_space(client, "Prayer")
+    assert enable(client, space["id"]).status_code == 200  # healthy config saved
 
     def boom(city, country, method):
         raise RuntimeError("aladhan down")
 
     monkeypatch.setattr(prayers, "fetch_timings", boom)
-    # Enabling still succeeds (the immediate run fails quietly)…
-    assert enable(client, space["id"]).status_code == 200
-    # …and the scheduler tick logs the failure without raising.
+    # An outage after enabling: the tick is contained, existing todos stay.
     assert automation_tick_once() == 0
-    assert client.get(f"/api/spaces/{space['id']}/todos").json()["items"] == []
+    assert len(client.get(f"/api/spaces/{space['id']}/todos").json()["items"]) == 5
+    # A config whose very first fetch fails is rejected up front — never
+    # saved as an "On" card that silently does nothing forever.
+    space2 = create_space(client, "Prayer2")
+    assert enable(client, space2["id"]).status_code == 400
+    assert client.get(f"/api/spaces/{space2['id']}").json()["automation"] is None
+
+
+def test_past_midnight_isha_rolls_to_next_day(client, fake_aladhan):
+    # High-latitude summer: Isha lands past midnight as a bare "00:32" —
+    # earlier than Maghrib on the clock, but actually the NEXT local day.
+    fake_aladhan["times"]["Maghrib"] = "23:12"
+    fake_aladhan["times"]["Isha"] = "00:32"
+    make_user(client, "ana@example.com")
+    space = create_space(client, "Prayer")
+    enable(client, space["id"])
+    items = client.get(f"/api/spaces/{space['id']}/todos").json()["items"]
+    maghrib = next(t for t in items if t["title"] == "Maghrib")
+    isha = next(t for t in items if t["title"] == "Isha")
+    assert isha["due_at"] > maghrib["due_at"]
+    day = fake_aladhan["date"]
+    expected = datetime(day.year, day.month, day.day, 0, 32, tzinfo=CAIRO) + timedelta(days=1)
+    assert isha["due_at"] == expected.astimezone(UTC).isoformat()

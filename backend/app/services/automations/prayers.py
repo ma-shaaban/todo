@@ -34,8 +34,16 @@ def fetch_timings(city: str, country: str, method: int | None) -> dict:
     params = {"city": city, "country": country}
     if method is not None:
         params["method"] = method
+    # follow_redirects: the dateless request 302s to the dated URL (AlAdhan
+    # resolves "today" in the LOCATION's timezone — exactly what we want;
+    # computing the date server-side in UTC would mis-key east-of-UTC cities
+    # around midnight). httpx neither follows nor tolerates 3xx by default,
+    # so without this every single call fails.
     resp = httpx.get(
-        "https://api.aladhan.com/v1/timingsByCity", params=params, timeout=10
+        "https://api.aladhan.com/v1/timingsByCity",
+        params=params,
+        timeout=10,
+        follow_redirects=True,
     )
     resp.raise_for_status()
     data = resp.json()["data"]
@@ -56,11 +64,33 @@ def _parse_local(hhmm: str, day, tz) -> datetime | None:
 
 
 def run(db, space, now) -> None:
+    import sqlalchemy as sa
+
     cfg = space.automation_config or {}
     city = cfg.get("city") or "Cairo"
     country = cfg.get("country") or "Egypt"
     method = cfg.get("method")
 
+    # Cheap pre-check only — the authoritative member read happens under
+    # the space lock below, AFTER the network call.
+    if (
+        db.query(models.SpaceMember)
+        .filter(models.SpaceMember.space_id == space.id)
+        .first()
+        is None
+    ):
+        return
+
+    fetched = fetch_timings(city, country, method)
+    day, tz = fetched["date"], fetched["tz"]
+
+    # Serialize against member removal (which takes the same space lock):
+    # a member kicked during the seconds-long AlAdhan call must not be
+    # resurrected onto prayer todos from a stale member list. The lock is
+    # taken only after the network call, so it's held briefly.
+    db.execute(
+        sa.select(models.Space.id).where(models.Space.id == space.id).with_for_update()
+    ).first()
     member_ids = [
         m.user_id
         for m in db.query(models.SpaceMember)
@@ -70,8 +100,22 @@ def run(db, space, now) -> None:
     if not member_ids:
         return
 
-    fetched = fetch_timings(city, country, method)
-    day, tz = fetched["date"], fetched["tz"]
+    # Parse with midnight rollover: high-latitude Isha can land past
+    # midnight (Reykjavik in July: Maghrib 23:12, Isha "00:32") — a bare
+    # HH:MM earlier than the previous prayer means the NEXT local day.
+    due_times: dict[str, datetime] = {}
+    prev = None
+    for prayer in PRAYERS:
+        due_at = _parse_local(fetched["times"][prayer], day, tz)
+        if due_at is None:
+            log.warning(
+                "unparseable %s time %r for space %s", prayer, fetched["times"][prayer], space.id
+            )
+            continue
+        if prev is not None and due_at < prev:
+            due_at += timedelta(days=1)
+        due_times[prayer] = due_at
+        prev = due_at
 
     existing = {
         t.automation_key: t
@@ -82,12 +126,8 @@ def run(db, space, now) -> None:
         )
         .all()
     }
-    for prayer in PRAYERS:
+    for prayer, due_at in due_times.items():
         key = f"{KEY_PREFIX}{day.isoformat()}:{prayer.lower()}"
-        due_at = _parse_local(fetched["times"][prayer], day, tz)
-        if due_at is None:
-            log.warning("unparseable %s time %r for space %s", prayer, fetched["times"][prayer], space.id)
-            continue
         todo = existing.get(key)
         if todo is None:
             todo = models.Todo(
@@ -111,7 +151,15 @@ def run(db, space, now) -> None:
         elif todo.completed_at is None and todo.due_at and todo.due_at > now:
             # Membership sync: whoever joined since creation gets a box on
             # prayers still ahead today. (Leavers are handled by the
-            # member-removal path.)
+            # member-removal path.) Inserting an unchecked row races the
+            # last checker's roll-up count, so honor the house invariant:
+            # take the todo row lock, then re-check completion.
+            db.execute(
+                sa.select(models.Todo.id).where(models.Todo.id == todo.id).with_for_update()
+            ).first()
+            db.refresh(todo)
+            if todo.completed_at is not None:
+                continue
             have = {
                 r.user_id
                 for r in db.query(models.TodoAssignee)

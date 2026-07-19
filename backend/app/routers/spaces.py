@@ -202,6 +202,20 @@ def set_automation(
     if method is not None:
         if not isinstance(method, int) or method not in _ALADHAN_METHODS:
             raise HTTPException(status_code=400, detail="Unknown calculation method")
+    # Prove the config actually works before saving it — otherwise the card
+    # says "On" forever while every run fails invisibly in the pod logs.
+    try:
+        from app.services.automations.prayers import fetch_timings
+
+        fetch_timings(city, country, method)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Couldn't fetch prayer times for that location — check the "
+                "city and country (or try again in a minute)"
+            ),
+        )
     space.automation_type = body.type
     space.automation_config = {"city": city, "country": country, "method": method}
     db.flush()
@@ -269,6 +283,12 @@ def remove_member(space_id: str, member_id: str, user: CurrentUser, db: DbSessio
             db, sid, user, "member_removed",
             removed_name=removed_user.display_name if removed_user else "?",
         )
+    # Lock order: space row first (serializes vs the automation provider's
+    # membership sync — it takes the same lock before reading members),
+    # then the todo rows.
+    db.execute(
+        sa.select(models.Space.id).where(models.Space.id == sid).with_for_update()
+    ).first()
     db.delete(target)
     # Their pending 'each' checks leave with them — otherwise group todos
     # they never checked could never complete. Checked rows stay (history).
