@@ -8,6 +8,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from sqlalchemy.exc import IntegrityError
 
 from app import models, security
 from app.db import utcnow
@@ -18,7 +19,13 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _MIN_PASSWORD = 8
+_MAX_PASSWORD = 1024  # cap argon2 input so huge bodies can't burn CPU
 _MAX_NAME = 80
+
+# Verified against when login targets a nonexistent (or passwordless OAuth)
+# account, so both outcomes cost one argon2 verify — otherwise response
+# timing would reveal which emails are registered.
+_DUMMY_HASH = security.hash_password("timing-equalizer")
 
 
 def _create_session(db, user: models.User, request: Request) -> str:
@@ -48,7 +55,7 @@ def signup(body: SignupIn, request: Request, response: Response, db: DbSession):
     email = body.email.strip().lower()
     if len(email) > 254 or not _EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Please enter a valid email address")
-    if len(body.password) < _MIN_PASSWORD:
+    if not _MIN_PASSWORD <= len(body.password) <= _MAX_PASSWORD:
         raise HTTPException(
             status_code=400, detail=f"Password must be at least {_MIN_PASSWORD} characters"
         )
@@ -61,7 +68,13 @@ def signup(body: SignupIn, request: Request, response: Response, db: DbSession):
         display_name=display_name,
     )
     db.add(user)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # Concurrent signup for the same email lost the race with the unique
+        # index — same answer as the sequential path, not a 500.
+        db.rollback()
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
     token = _create_session(db, user, request)
     security.set_session_cookie(response, request, token)
     return user_out(user)
@@ -76,14 +89,21 @@ def login(body: LoginIn, request: Request, response: Response, db: DbSession):
             status_code=429, detail="Too many attempts — try again in a few minutes"
         )
     user = db.query(models.User).filter(models.User.email == email).one_or_none()
-    ok = (
-        user is not None
-        and user.password_hash is not None
-        and security.verify_password(user.password_hash, body.password)
-    )
+    if user is not None and user.password_hash is not None:
+        ok = security.verify_password(user.password_hash, body.password[:_MAX_PASSWORD])
+    else:
+        # Equalize timing for unknown/passwordless accounts (see _DUMMY_HASH).
+        security.verify_password(_DUMMY_HASH, body.password[:_MAX_PASSWORD])
+        ok = False
     if not ok:
         security.record_login_failure(email, ip)
         raise HTTPException(status_code=401, detail="Incorrect email or password")
+    # Opportunistic cleanup: this user's expired sessions go now, so the
+    # table can't grow without bound.
+    db.query(models.UserSession).filter(
+        models.UserSession.user_id == user.id,
+        models.UserSession.expires_at <= utcnow(),
+    ).delete()
     token = _create_session(db, user, request)
     security.set_session_cookie(response, request, token)
     return user_out(user)

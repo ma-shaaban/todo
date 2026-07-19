@@ -35,27 +35,46 @@ def hash_token(token: str) -> str:
 
 
 # ── Login rate limiting ───────────────────────────────────────────────────
-# In-memory sliding window; fine at the deployment's single replica.
+# In-memory sliding windows; fine at the deployment's single replica.
+# Two buckets: per email+ip (tight) and per email alone (looser backstop so
+# rotating source addresses can't grant unlimited guesses on one account).
 _WINDOW_SECONDS = 15 * 60
 _MAX_FAILURES = 10
+_MAX_EMAIL_FAILURES = 30
+_MAX_TRACKED_KEYS = 50_000  # hard memory bound; clearing resets limits, logged
 _failures: dict[str, deque] = defaultdict(deque)
 
 
-def _rate_key(email: str, ip: str) -> str:
-    return f"{email.strip().lower()}|{ip}"
+def _prune(key: str) -> int:
+    """Drop expired timestamps; evict empty keys. Returns remaining count."""
+    q = _failures.get(key)
+    if q is None:
+        return 0
+    now = time.monotonic()
+    while q and now - q[0] > _WINDOW_SECONDS:
+        q.popleft()
+    if not q:
+        del _failures[key]
+        return 0
+    return len(q)
 
 
 def check_login_rate(email: str, ip: str) -> bool:
     """True when another attempt is allowed."""
-    q = _failures[_rate_key(email, ip)]
-    now = time.monotonic()
-    while q and now - q[0] > _WINDOW_SECONDS:
-        q.popleft()
-    return len(q) < _MAX_FAILURES
+    email = email.strip().lower()
+    return (
+        _prune(f"{email}|{ip}") < _MAX_FAILURES
+        and _prune(f"{email}|*") < _MAX_EMAIL_FAILURES
+    )
 
 
 def record_login_failure(email: str, ip: str) -> None:
-    _failures[_rate_key(email, ip)].append(time.monotonic())
+    if len(_failures) > _MAX_TRACKED_KEYS:
+        _failures.clear()
+    email = email.strip().lower()
+    now = time.monotonic()
+    _failures[f"{email}|{ip}"].append(now)
+    _failures[f"{email}|*"].append(now)
 
 
 def reset_rate_limit() -> None:
@@ -63,9 +82,12 @@ def reset_rate_limit() -> None:
 
 
 def client_ip(request: Request) -> str:
+    # Rightmost X-Forwarded-For entry: the one the platform gateway (Envoy)
+    # itself appended. The leftmost entries are client-supplied and spoofable —
+    # trusting them would let an attacker rotate fake IPs past the limiter.
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 

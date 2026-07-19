@@ -107,6 +107,120 @@ def test_cross_origin_post_rejected(client):
     assert r.status_code == 403
 
 
+def test_null_origin_post_rejected(client):
+    # "Origin: null" (sandboxed iframes, file://) is definitively cross-origin.
+    r = signup(client, headers={"origin": "null"})
+    assert r.status_code == 403
+
+
 def test_same_origin_post_allowed(client):
     r = signup(client, headers={"origin": "http://testserver"})
     assert r.status_code == 201
+
+
+def test_rate_limit_ignores_spoofed_left_xff_entries(client):
+    # The leftmost X-Forwarded-For entries are client-supplied; only the
+    # rightmost (gateway-appended) one counts. Rotating fakes must not
+    # grant fresh rate-limit buckets.
+    signup(client)
+    for i in range(10):
+        r = client.post(
+            "/api/auth/login",
+            json={"email": "ana@example.com", "password": "badbadbad"},
+            headers={"x-forwarded-for": f"{i}.{i}.{i}.{i}, 10.0.0.99"},
+        )
+        assert r.status_code == 401
+    r = client.post(
+        "/api/auth/login",
+        json={"email": "ana@example.com", "password": "sup3rsecret"},
+        headers={"x-forwarded-for": "99.99.99.99, 10.0.0.99"},
+    )
+    assert r.status_code == 429
+
+
+def test_per_email_backstop_limits_rotating_ips(client):
+    # Even with fully distinct source IPs, one email can't take unlimited
+    # guesses: the per-email backstop trips at 30 failures.
+    signup(client)
+    for i in range(30):
+        r = client.post(
+            "/api/auth/login",
+            json={"email": "ana@example.com", "password": "badbadbad"},
+            headers={"x-forwarded-for": f"1.2.{i // 250}.{i % 250}"},
+        )
+        assert r.status_code == 401
+    r = client.post(
+        "/api/auth/login",
+        json={"email": "ana@example.com", "password": "sup3rsecret"},
+        headers={"x-forwarded-for": "8.8.8.8"},
+    )
+    assert r.status_code == 429
+
+
+def test_login_with_oauth_style_account_is_401_not_500(client, migrated_db):
+    # A user without a password (future Google sign-in) must get the same
+    # 401 as a wrong password — not a server error.
+    from app import models
+    from app.db import get_engine
+    from sqlalchemy.orm import Session as OrmSession
+
+    with OrmSession(get_engine()) as s:
+        s.add(models.User(email="oauth@example.com", password_hash=None, display_name="O"))
+        s.commit()
+    r = client.post("/api/auth/login", json={"email": "oauth@example.com", "password": "whatever1"})
+    assert r.status_code == 401
+    assert r.json()["detail"] == "Incorrect email or password"
+
+
+def test_huge_password_rejected(client):
+    assert signup(client, password="x" * 2000).status_code == 400
+
+
+def test_commit_failure_is_503_not_phantom_success(client, monkeypatch):
+    # The session commits BEFORE the response is sent (function-scoped
+    # dependency); a commit-time DB failure must surface as the JSON 503,
+    # never a 201 whose rows silently vanished.
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.orm import Session as OrmSession
+
+    def boom(self):
+        raise OperationalError("commit", None, Exception("connection lost"))
+
+    monkeypatch.setattr(OrmSession, "commit", boom)
+    r = signup(client, email="doomed@example.com")
+    assert r.status_code == 503
+    assert "unavailable" in r.json()["detail"].lower()
+
+
+def test_expired_session_row_deleted_when_presented(client, migrated_db):
+    import sqlalchemy as sa
+
+    from tests.conftest import test_engine
+
+    signup(client)
+    with test_engine().begin() as conn:
+        n = conn.execute(sa.text("UPDATE sessions SET expires_at = now() - interval '1 day'")).rowcount
+        assert n == 1
+    assert client.get("/api/auth/me").status_code == 401
+    with test_engine().begin() as conn:
+        left = conn.execute(sa.text("SELECT count(*) FROM sessions")).scalar()
+    assert left == 0
+
+
+def test_rolling_expiry_reissues_cookie(client, migrated_db):
+    import sqlalchemy as sa
+
+    from tests.conftest import test_engine
+
+    signup(client)
+    # Backdate the session into the final 15-day window.
+    with test_engine().begin() as conn:
+        conn.execute(sa.text("UPDATE sessions SET expires_at = now() + interval '5 days'"))
+    r = client.get("/api/auth/me")
+    assert r.status_code == 200
+    assert "session=" in r.headers.get("set-cookie", "")
+    with test_engine().begin() as conn:
+        days = conn.execute(
+            sa.text("SELECT extract(epoch FROM (expires_at - now())) / 86400 FROM sessions")
+        ).scalar()
+    assert days > 29

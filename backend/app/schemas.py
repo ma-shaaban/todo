@@ -20,14 +20,6 @@ class ProfilePatch(BaseModel):
     timezone: str | None = None
 
 
-class UserOut(BaseModel):
-    id: str
-    email: str
-    display_name: str
-    timezone: str | None
-    provider: str
-
-
 def user_out(user) -> dict:
     return {
         "id": str(user.id),

@@ -11,6 +11,7 @@ import psycopg
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.routers import auth as auth_router
 
@@ -29,11 +30,25 @@ async def csrf_origin_guard(request: Request, call_next):
         if origin:
             origin_host = urlparse(origin).hostname
             request_host = (request.headers.get("host") or "").split(":")[0]
-            if origin_host and request_host and origin_host != request_host:
+            # An unparseable Origin (including the literal "null" from
+            # sandboxed iframes) is definitively cross-origin — fail closed.
+            if origin_host is None or not request_host or origin_host != request_host:
                 return JSONResponse(
                     status_code=403, content={"detail": "Cross-origin request rejected"}
                 )
     return await call_next(request)
+
+
+@app.exception_handler(OperationalError)
+@app.exception_handler(ProgrammingError)
+async def _db_error_handler(request: Request, exc: Exception):
+    """DB unreachable or schema not migrated yet (entrypoint.sh keeps retrying
+    migrations in the background). Same posture as /api/db-check: generic JSON,
+    details only in server logs — and never a text/plain 500 on /api/*."""
+    logger.exception("database error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=503, content={"detail": "Service temporarily unavailable — try again shortly"}
+    )
 
 
 def _db_conninfo() -> dict:
