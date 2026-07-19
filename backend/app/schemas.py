@@ -26,6 +26,11 @@ class SpaceIn(BaseModel):
     name: str
 
 
+class AutomationIn(BaseModel):
+    type: str
+    config: dict = {}
+
+
 class TodoCreate(BaseModel):
     title: str
     notes: str = ""

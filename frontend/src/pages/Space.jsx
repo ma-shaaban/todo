@@ -49,6 +49,7 @@ export default function Space() {
   const [quick, setQuick] = useState('')
   const [editing, setEditing] = useState(undefined) // undefined=closed, null=new, todo=edit
   const [invite, setInvite] = useState(null)
+  const [auto, setAuto] = useState({ city: 'Cairo', country: 'Egypt', method: '5' })
   const [error, setError] = useState('')
   const [notFound, setNotFound] = useState(false)
 
@@ -197,6 +198,36 @@ export default function Space() {
     }
   }
 
+  const saveAutomation = async (e) => {
+    e.preventDefault()
+    try {
+      await api(`/api/spaces/${id}/automation`, {
+        method: 'PUT',
+        body: {
+          type: 'islamic_prayers',
+          config: {
+            city: auto.city.trim(),
+            country: auto.country.trim(),
+            method: auto.method === '' ? null : Number(auto.method),
+          },
+        },
+      })
+      load()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const disableAutomation = async () => {
+    if (!confirm('Turn off prayer times? Existing prayer todos stay.')) return
+    try {
+      await api(`/api/spaces/${id}/automation`, { method: 'DELETE' })
+      load()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   if (notFound) {
     return (
       <>
@@ -313,6 +344,67 @@ export default function Space() {
               )}
             </div>
           ))}
+          <div className="card" style={{ marginTop: 16 }}>
+            <h3>🕌 Prayer times</h3>
+            {space.automation?.type === 'islamic_prayers' ? (
+              <>
+                <div className="meta">
+                  On — {space.automation.config.city}, {space.automation.config.country}. The
+                  five daily prayers appear automatically for everyone to check off, with
+                  reminders 15 minutes before and at prayer time. Missed prayers stay a week.
+                </div>
+                {space.my_role === 'owner' && (
+                  <button className="linklike" onClick={disableAutomation}>
+                    Turn off
+                  </button>
+                )}
+              </>
+            ) : space.my_role === 'owner' ? (
+              <form onSubmit={saveAutomation}>
+                <div className="meta">
+                  Creates the five daily prayers for everyone in this space, each person
+                  checking off their own.
+                </div>
+                <div className="row" style={{ marginTop: 8 }}>
+                  <div className="field">
+                    <label>City</label>
+                    <input
+                      value={auto.city}
+                      onChange={(e) => setAuto({ ...auto, city: e.target.value })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Country</label>
+                    <input
+                      value={auto.country}
+                      onChange={(e) => setAuto({ ...auto, country: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Calculation method</label>
+                  <select
+                    value={auto.method}
+                    onChange={(e) => setAuto({ ...auto, method: e.target.value })}
+                  >
+                    <option value="5">Egyptian General Authority</option>
+                    <option value="4">Umm Al-Qura (Makkah)</option>
+                    <option value="3">Muslim World League</option>
+                    <option value="2">ISNA (North America)</option>
+                    <option value="1">University of Karachi</option>
+                    <option value="8">Gulf Region</option>
+                    <option value="13">Diyanet (Turkey)</option>
+                    <option value="">Automatic</option>
+                  </select>
+                </div>
+                <button className="btn" disabled={!auto.city.trim() || !auto.country.trim()}>
+                  Turn on
+                </button>
+              </form>
+            ) : (
+              <div className="meta">Not set up — the space owner can turn this on.</div>
+            )}
+          </div>
           {space.my_role === 'owner' && (
             <p className="hint">
               <button className="linklike" style={{ color: 'var(--danger)' }} onClick={deleteSpace}>
