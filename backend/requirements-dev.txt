@@ -1,0 +1,6 @@
+# Dev/test-only dependencies — NOT installed into the runtime image
+# (the Dockerfile installs requirements.txt only, keeping the image lean).
+# Pins verified against PyPI 2026-07-19.
+-r requirements.txt
+pytest==9.1.1
+httpx==0.28.1
