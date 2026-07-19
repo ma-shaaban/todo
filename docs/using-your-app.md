@@ -41,17 +41,22 @@ doesn't exist on production.
   **yours**; the `n/m` chip shows how many have done theirs, and the todo
   only moves to Done when the last person checks off.
 
-## Prayer times (automatic todos)
+## Space templates — the Prayer space
 
-Any space can become a prayer space: open it → **Members** tab →
-**🕌 Prayer times** → set your city, country and calculation method →
-**Turn on** (owner only). From then on the five daily prayers (Fajr,
-Dhuhr, Asr, Maghrib, Isha) appear automatically as group todos — everyone
-checks off their own prayer, with reminders **15 minutes before** and
-**at prayer time**. A missed prayer stays visible (you can still check it
-off late) for a week, then quietly disappears. Times come from
-[AlAdhan](https://aladhan.com) for your chosen city, so they follow the
-seasons on their own.
+On the **Spaces** screen, under *"Or start from a template"*, tap
+**🕌 Prayer space**, pick a name, your city/country and calculation
+method, and **Create**. The space opens with the five daily prayers
+(Fajr, Dhuhr, Asr, Maghrib, Isha) already there — created fresh every
+day as group todos where everyone checks off their own prayer, with
+reminders **15 minutes before** and **at prayer time**. A missed prayer
+stays visible (you can still check it off late) for a week, then quietly
+disappears. Times come from [AlAdhan](https://aladhan.com) for your
+chosen city, so they follow the seasons on their own.
+
+Inside a prayer space, the owner can adjust the city/method or turn the
+feed off from the **Members** tab. Regular spaces have none of this —
+templates only affect the space you created from them. More templates
+can be added over time.
 
 ## Install it on your phone
 

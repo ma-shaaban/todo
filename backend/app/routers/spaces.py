@@ -102,14 +102,51 @@ def _open_todo_counts(db, space_ids) -> dict:
     )
 
 
+@router.get("/space-templates")
+def space_templates(user: CurrentUser):
+    """Templates for the create-space screen — straight from the automation
+    registry, so a new provider module shows up here with no UI change."""
+    from app.services.automations import TEMPLATES
+
+    return {"items": TEMPLATES}
+
+
 @router.post("/spaces", status_code=201)
-def create_space(body: SpaceIn, user: CurrentUser, db: DbSession):
+def create_space(
+    body: SpaceIn, user: CurrentUser, db: DbSession, background: BackgroundTasks
+):
     name = _validate_space_name(body.name)
-    space = models.Space(name=name, created_by=user.id)
+    automation_type = None
+    automation_config = None
+    if body.template:
+        # Template = a space born with its automation on; the config is
+        # validated (including one real fetch) BEFORE anything is created.
+        automation_type, automation_config = _validated_automation(
+            body.template, body.config or {}
+        )
+    space = models.Space(
+        name=name,
+        created_by=user.id,
+        automation_type=automation_type,
+        automation_config=automation_config,
+    )
     db.add(space)
     db.flush()
     db.add(models.SpaceMember(space_id=space.id, user_id=user.id, role="owner"))
-    return {"id": str(space.id), "name": space.name, "my_role": "owner"}
+    if automation_type:
+        # First run right away (post-commit): the space opens already
+        # populated instead of waiting for the scheduler tick.
+        background.add_task(_run_automation_now, space.id)
+    return {
+        "id": str(space.id),
+        "name": space.name,
+        "my_role": "owner",
+        "automation": (
+            {"type": automation_type, "config": automation_config}
+            if automation_type
+            else None
+        ),
+    }
 
 
 def _get_space_or_404(db, sid) -> models.Space:
@@ -173,8 +210,22 @@ def delete_space(space_id: str, user: CurrentUser, db: DbSession):
     return {"ok": True}
 
 
-_MAX_AUTOMATION_STR = 100
-_ALADHAN_METHODS = set(range(0, 24))
+def _validated_automation(atype: str, cfg: dict) -> tuple[str, dict]:
+    """Normalized (type, config) or a friendly 400 — shared by the space
+    template path and the direct PUT. Validation belongs to the provider
+    (each module ships validate_config), so a future template isn't forced
+    through prayer-specific rules."""
+    from app.services.automations import MODULES
+
+    module = MODULES.get(atype)
+    if module is None:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown template: {', '.join(sorted(MODULES))}"
+        )
+    try:
+        return atype, module.validate_config(cfg or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.put("/spaces/{space_id}/automation")
@@ -182,42 +233,12 @@ def set_automation(
     space_id: str, body: AutomationIn, user: CurrentUser, db: DbSession,
     background: BackgroundTasks,
 ):
-    from app.services.automations import PROVIDERS
-
     sid = parse_uuid(space_id)
     require_owner(get_membership(db, sid, user))
     space = _get_space_or_404(db, sid)
-    if body.type not in PROVIDERS:
-        raise HTTPException(
-            status_code=400, detail=f"Unknown automation: {', '.join(sorted(PROVIDERS))}"
-        )
-    cfg = body.config or {}
-    city = str(cfg.get("city") or "").strip()
-    country = str(cfg.get("country") or "").strip()
-    if not city or not country:
-        raise HTTPException(status_code=400, detail="Please set a city and a country")
-    if len(city) > _MAX_AUTOMATION_STR or len(country) > _MAX_AUTOMATION_STR:
-        raise HTTPException(status_code=400, detail="City/country names are too long")
-    method = cfg.get("method")
-    if method is not None:
-        if not isinstance(method, int) or method not in _ALADHAN_METHODS:
-            raise HTTPException(status_code=400, detail="Unknown calculation method")
-    # Prove the config actually works before saving it — otherwise the card
-    # says "On" forever while every run fails invisibly in the pod logs.
-    try:
-        from app.services.automations.prayers import fetch_timings
-
-        fetch_timings(city, country, method)
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Couldn't fetch prayer times for that location — check the "
-                "city and country (or try again in a minute)"
-            ),
-        )
-    space.automation_type = body.type
-    space.automation_config = {"city": city, "country": country, "method": method}
+    space.automation_type, space.automation_config = _validated_automation(
+        body.type, body.config or {}
+    )
     db.flush()
     # First run right away (post-commit) so todos appear without waiting
     # for the next scheduler tick.
