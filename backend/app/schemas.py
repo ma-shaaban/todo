@@ -1,6 +1,8 @@
 """Pydantic request/response bodies. Validation that produces friendly
 400s (rather than pydantic 422s) lives in the routers."""
 
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -22,6 +24,31 @@ class ProfilePatch(BaseModel):
 
 class SpaceIn(BaseModel):
     name: str
+
+
+class TodoCreate(BaseModel):
+    title: str
+    notes: str = ""
+    due_at: datetime | None = None
+    priority: int = 0
+    assignee_id: str | None = None
+    recurrence: str | None = None
+    position: float = 0.0
+    reminders: list[datetime] = []
+
+
+class TodoPatch(BaseModel):
+    """PATCH semantics: an omitted field is untouched; an explicit null
+    clears it (distinguished via model_fields_set)."""
+
+    title: str | None = None
+    notes: str | None = None
+    due_at: datetime | None = None
+    priority: int | None = None
+    assignee_id: str | None = None
+    recurrence: str | None = None
+    position: float | None = None
+    reminders: list[datetime] | None = None
 
 
 def user_out(user) -> dict:

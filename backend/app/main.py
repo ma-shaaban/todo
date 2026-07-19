@@ -15,6 +15,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.routers import auth as auth_router
 from app.routers import spaces as spaces_router
+from app.routers import todos as todos_router
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ def healthz():
 # rule that API routes precede it (implementations live in app/routers/).
 app.include_router(auth_router.router)
 app.include_router(spaces_router.router)
+app.include_router(todos_router.router)
 
 
 # SPA serving — registered last so every /api/* + /healthz route above wins.
