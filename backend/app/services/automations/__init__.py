@@ -6,8 +6,10 @@ be idempotent: todos they create carry `todos.automation_key` (unique per
 space), so a re-run finds yesterday's work instead of duplicating it.
 Network failures should raise; the scheduler logs and retries next tick.
 
-Adding an automation = one module here + one PROVIDERS entry. The owner
-enables it per space via PUT /api/spaces/{id}/automation.
+Adding an automation = one module here (with a TEMPLATE metadata dict) +
+one PROVIDERS entry. Users reach it as a space template on the create-space
+screen (GET /api/space-templates → POST /api/spaces {template, config});
+PUT /api/spaces/{id}/automation stays as the direct API.
 """
 
 from app.services.automations import prayers
@@ -15,3 +17,6 @@ from app.services.automations import prayers
 PROVIDERS = {
     "islamic_prayers": prayers.run,
 }
+
+# Create-space templates, rendered generically by the frontend.
+TEMPLATES = [prayers.TEMPLATE]

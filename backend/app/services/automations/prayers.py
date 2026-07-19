@@ -19,6 +19,41 @@ from app import models
 
 log = logging.getLogger(__name__)
 
+# Space-template metadata: the create-space UI renders this generically
+# (fields, defaults, options), so a new automation ships its own template
+# with zero frontend changes.
+TEMPLATE = {
+    "key": "islamic_prayers",
+    "icon": "🕌",
+    "name": "Prayer space",
+    "description": (
+        "The five daily prayers appear automatically for everyone to check "
+        "off — each person their own — with reminders 15 minutes before and "
+        "at prayer time."
+    ),
+    "default_space_name": "Prayer",
+    "config_fields": [
+        {"key": "city", "label": "City", "type": "text", "default": "Cairo"},
+        {"key": "country", "label": "Country", "type": "text", "default": "Egypt"},
+        {
+            "key": "method",
+            "label": "Calculation method",
+            "type": "select",
+            "default": 5,
+            "options": [
+                {"value": 5, "label": "Egyptian General Authority"},
+                {"value": 4, "label": "Umm Al-Qura (Makkah)"},
+                {"value": 3, "label": "Muslim World League"},
+                {"value": 2, "label": "ISNA (North America)"},
+                {"value": 1, "label": "University of Karachi"},
+                {"value": 8, "label": "Gulf Region"},
+                {"value": 13, "label": "Diyanet (Turkey)"},
+                {"value": None, "label": "Automatic"},
+            ],
+        },
+    ],
+}
+
 PRAYERS = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"]
 KEY_PREFIX = "prayer:"
 RETENTION_DAYS = 7

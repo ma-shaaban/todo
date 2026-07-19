@@ -164,6 +164,68 @@ def test_automation_permissions_and_validation(client, make_client, fake_aladhan
     assert len(client.get(f"/api/spaces/{space['id']}/todos").json()["items"]) == 5
 
 
+def test_space_templates_listing(client):
+    make_user(client, "ana@example.com")
+    r = client.get("/api/space-templates")
+    assert r.status_code == 200
+    tpl = r.json()["items"][0]
+    assert tpl["key"] == "islamic_prayers"
+    assert tpl["default_space_name"] == "Prayer"
+    assert {f["key"] for f in tpl["config_fields"]} == {"city", "country", "method"}
+
+
+def test_create_space_from_template(client, fake_aladhan):
+    make_user(client, "ana@example.com")
+    r = client.post(
+        "/api/spaces",
+        json={
+            "name": "Prayer",
+            "template": "islamic_prayers",
+            "config": {"city": "Cairo", "country": "Egypt", "method": 5},
+        },
+    )
+    assert r.status_code == 201, r.text
+    space = r.json()
+    assert space["automation"]["type"] == "islamic_prayers"
+    assert space["automation"]["config"]["city"] == "Cairo"
+    # The immediate run populated the space before the first visit.
+    items = client.get(f"/api/spaces/{space['id']}/todos").json()["items"]
+    assert sorted(t["title"] for t in items) == sorted(TIMES)
+    assert client.get(f"/api/spaces/{space['id']}").json()["automation"]["type"] == "islamic_prayers"
+
+
+def test_create_space_template_validation(client, fake_aladhan, monkeypatch):
+    from app.services.automations import prayers
+
+    make_user(client, "ana@example.com")
+    assert (
+        client.post("/api/spaces", json={"name": "X", "template": "weather"}).status_code == 400
+    )
+    assert (
+        client.post(
+            "/api/spaces",
+            json={"name": "X", "template": "islamic_prayers", "config": {"country": "Egypt"}},
+        ).status_code
+        == 400
+    )
+
+    def boom(city, country, method):
+        raise RuntimeError("aladhan down")
+
+    monkeypatch.setattr(prayers, "fetch_timings", boom)
+    r = client.post(
+        "/api/spaces",
+        json={
+            "name": "X",
+            "template": "islamic_prayers",
+            "config": {"city": "Cairo", "country": "Egypt"},
+        },
+    )
+    assert r.status_code == 400
+    # No half-created spaces leak from rejected template creates.
+    assert client.get("/api/spaces").json()["items"] == []
+
+
 def test_aladhan_failure_handling(client, fake_aladhan, monkeypatch):
     from app.services.automations import prayers
     from app.services.scheduler import automation_tick_once

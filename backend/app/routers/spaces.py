@@ -102,14 +102,51 @@ def _open_todo_counts(db, space_ids) -> dict:
     )
 
 
+@router.get("/space-templates")
+def space_templates(user: CurrentUser):
+    """Templates for the create-space screen — straight from the automation
+    registry, so a new provider module shows up here with no UI change."""
+    from app.services.automations import TEMPLATES
+
+    return {"items": TEMPLATES}
+
+
 @router.post("/spaces", status_code=201)
-def create_space(body: SpaceIn, user: CurrentUser, db: DbSession):
+def create_space(
+    body: SpaceIn, user: CurrentUser, db: DbSession, background: BackgroundTasks
+):
     name = _validate_space_name(body.name)
-    space = models.Space(name=name, created_by=user.id)
+    automation_type = None
+    automation_config = None
+    if body.template:
+        # Template = a space born with its automation on; the config is
+        # validated (including one real fetch) BEFORE anything is created.
+        automation_type, automation_config = _validated_automation(
+            body.template, body.config or {}
+        )
+    space = models.Space(
+        name=name,
+        created_by=user.id,
+        automation_type=automation_type,
+        automation_config=automation_config,
+    )
     db.add(space)
     db.flush()
     db.add(models.SpaceMember(space_id=space.id, user_id=user.id, role="owner"))
-    return {"id": str(space.id), "name": space.name, "my_role": "owner"}
+    if automation_type:
+        # First run right away (post-commit): the space opens already
+        # populated instead of waiting for the scheduler tick.
+        background.add_task(_run_automation_now, space.id)
+    return {
+        "id": str(space.id),
+        "name": space.name,
+        "my_role": "owner",
+        "automation": (
+            {"type": automation_type, "config": automation_config}
+            if automation_type
+            else None
+        ),
+    }
 
 
 def _get_space_or_404(db, sid) -> models.Space:
@@ -177,21 +214,15 @@ _MAX_AUTOMATION_STR = 100
 _ALADHAN_METHODS = set(range(0, 24))
 
 
-@router.put("/spaces/{space_id}/automation")
-def set_automation(
-    space_id: str, body: AutomationIn, user: CurrentUser, db: DbSession,
-    background: BackgroundTasks,
-):
+def _validated_automation(atype: str, cfg: dict) -> tuple[str, dict]:
+    """Normalized (type, config) or a friendly 400 — shared by the space
+    template path and the direct PUT."""
     from app.services.automations import PROVIDERS
 
-    sid = parse_uuid(space_id)
-    require_owner(get_membership(db, sid, user))
-    space = _get_space_or_404(db, sid)
-    if body.type not in PROVIDERS:
+    if atype not in PROVIDERS:
         raise HTTPException(
-            status_code=400, detail=f"Unknown automation: {', '.join(sorted(PROVIDERS))}"
+            status_code=400, detail=f"Unknown template: {', '.join(sorted(PROVIDERS))}"
         )
-    cfg = body.config or {}
     city = str(cfg.get("city") or "").strip()
     country = str(cfg.get("country") or "").strip()
     if not city or not country:
@@ -202,8 +233,8 @@ def set_automation(
     if method is not None:
         if not isinstance(method, int) or method not in _ALADHAN_METHODS:
             raise HTTPException(status_code=400, detail="Unknown calculation method")
-    # Prove the config actually works before saving it — otherwise the card
-    # says "On" forever while every run fails invisibly in the pod logs.
+    # Prove the config actually works before saving it — otherwise the space
+    # says it's automated forever while every run fails invisibly in logs.
     try:
         from app.services.automations.prayers import fetch_timings
 
@@ -216,8 +247,20 @@ def set_automation(
                 "city and country (or try again in a minute)"
             ),
         )
-    space.automation_type = body.type
-    space.automation_config = {"city": city, "country": country, "method": method}
+    return atype, {"city": city, "country": country, "method": method}
+
+
+@router.put("/spaces/{space_id}/automation")
+def set_automation(
+    space_id: str, body: AutomationIn, user: CurrentUser, db: DbSession,
+    background: BackgroundTasks,
+):
+    sid = parse_uuid(space_id)
+    require_owner(get_membership(db, sid, user))
+    space = _get_space_or_404(db, sid)
+    space.automation_type, space.automation_config = _validated_automation(
+        body.type, body.config or {}
+    )
     db.flush()
     # First run right away (post-commit) so todos appear without waiting
     # for the next scheduler tick.

@@ -24,6 +24,10 @@ class ProfilePatch(BaseModel):
 
 class SpaceIn(BaseModel):
     name: str
+    # Optional space template (automation type key): the space is created
+    # with that automation already configured and running.
+    template: str | None = None
+    config: dict = {}
 
 
 class AutomationIn(BaseModel):
