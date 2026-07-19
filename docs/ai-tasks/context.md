@@ -1,5 +1,5 @@
 ---
-focus: 005 notifications+push implemented (85 tests); platform VAPID secret MERGED (nezam PR #5); app PR next
+focus: 008 activity+docs shipping; 001-007 DONE and staging-verified (main-d9df618, PWA live); next: staging E2E → prod release → scaffold eval
 lastVerified: 2026-07-19
 ---
 

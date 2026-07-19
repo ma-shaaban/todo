@@ -155,6 +155,24 @@ class Notification(Base):
     )
 
 
+class Activity(Base):
+    __tablename__ = "activity"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    type: Mapped[str] = mapped_column(sa.Text)
+    todo_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid, nullable=True)
+    data: Mapped[dict] = mapped_column(sa.JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=utcnow, server_default=sa.func.now()
+    )
+
+
 class UserSession(Base):
     __tablename__ = "sessions"
 

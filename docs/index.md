@@ -1,30 +1,37 @@
 # What is todo?
 
-Welcome! **todo** is your app, running on the Nezam platform.
+A **shared todo app** for you and the people around you — a spouse, family,
+housemates or a small team — running on the Nezam platform (which handles
+servers, hosting and shipping for you).
 
-You don't have to manage servers, set up hosting, or configure anything by
-hand — the platform takes care of running it, keeping it online, and shipping
-your changes for you. Your job is to decide what the app should do; the
-platform (and an AI coding assistant, if you like) handles the rest.
+You create a **space** (say, "Family"), invite someone with a link, and from
+then on you both see and manage the same todo list: add things, assign them
+to each other, set due dates, and get **reminders on your phone**.
 
-## Where your app lives
+## The highlights
 
-Your app has two web addresses:
+- **Shared spaces** — everyone in a space sees the same list.
+- **Invite with a link** — no emails or approvals; send the link over
+  WhatsApp or anything else. Links expire after 7 days and can be revoked.
+- **Todos with everything** — notes, due date & time, priority, an assignee,
+  and repeats (daily / weekly / monthly). Completing a repeating todo
+  automatically schedules the next one.
+- **Reminders** — pick "30 min before" or any custom time; they arrive as
+  phone notifications and in the app's Alerts tab.
+- **Install on your phone** — add it to your home screen and it behaves like
+  a regular app, including notifications. See [Using your app](using-your-app.md).
+- **My Tasks** — everything assigned to you, across all spaces, in one list.
+- **Activity** — each space shows who did what, when.
 
-- **Staging** — <https://todo-staging.nezam.site> — a preview of the
-  latest work. This is where every change shows up first, so you can look at
-  it before anyone else does.
-- **Production** — <https://todo.nezam.site> — the real, released version
-  that your users see. Nothing lands here until you choose to release it.
+## Where it runs
 
-## What's on this page vs. the others
+- **Staging** (the preview): <https://todo-staging.nezam.site>
+- **Production** (the released app): <https://todo.nezam.site>
 
-- **[How it works](how-it-works.md)** — a plain-language tour of the pieces
-  your app is made of.
-- **[Using your app](using-your-app.md)** — the difference between staging
-  and production, and what each one is for.
-- **[Developing with AI](developing-with-ai.md)** — the important one: how to
-  change and grow your app using an AI coding assistant, even if you've never
-  written code.
+Changes appear on staging automatically after each code change; production
+only updates when you cut a release. Details: [How it works](how-it-works.md).
 
-New here? Start with **[How it works](how-it-works.md)**.
+## Want Google sign-in?
+
+The app is ready for it — see [Google sign-in setup](google-signin-setup.md)
+for the one thing only you can do (creating the Google credentials).

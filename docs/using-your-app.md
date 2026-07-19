@@ -1,46 +1,54 @@
 # Using your app
 
-Your app has two addresses. They look almost the same, but they're for very
-different things.
-
-## Staging — the preview
-
-**<https://todo-staging.nezam.site>**
-
-Staging always shows the **latest** version of your app — every change lands
-here first, automatically, within about a minute of being approved.
-
-Use staging to:
-
-- See a change working before anyone else does.
-- Try things out and click around safely.
-- Show work-in-progress to a teammate.
-
-Think of staging as a rehearsal space. It's fine for things to be rough or
-half-finished here — that's the whole point.
-
-## Production — the real thing
-
-**<https://todo.nezam.site>**
-
-Production is the **released** version — the one your actual users see and
-rely on. It only updates when you deliberately **release** a new version.
-Nothing reaches production by accident.
-
-Use production for:
-
-- The stable app your users depend on.
-- Only changes you've already checked on staging and are happy with.
-
-## The short version
+## Staging vs production
 
 | | Staging | Production |
 |---|---|---|
-| Address | `todo-staging.nezam.site` | `todo.nezam.site` |
-| Shows | the latest work | released versions |
-| Updates | automatically (after you approve) | only when you release |
-| For | previewing & testing | your real users |
+| Address | <https://todo-staging.nezam.site> | <https://todo.nezam.site> |
+| Purpose | Preview of the newest changes | The stable, released app |
+| Updates | Automatically after every change | Only when you cut a release |
+| Data | Its own separate database | Its own separate database |
 
-**The habit:** every change appears on **staging** first. When it looks good
-there, you **release** it to **production**. How that works step by step is on
-the **[Developing with AI](developing-with-ai.md)** page.
+The two keep **separate accounts and data** — an account made on staging
+doesn't exist on production.
+
+## Getting started
+
+1. Open the app and **create an account** (name, email, password).
+2. **Create a space** — e.g. "Family".
+3. Open the space → **Members** tab → **Invite with a link** — send the link
+   to the other person however you like. They tap it, create their own
+   account, and land in your shared space.
+
+## Working with todos
+
+- The input at the top **quick-adds** a todo by title. Use *"+ Todo with
+  details"* for notes, due date, priority, assignee, repeat, and reminders.
+- Tap the **circle** to complete; tap a todo to edit it.
+- **Repeats**: a daily/weekly/monthly todo re-creates itself for the next
+  date when completed (monthly ones keep their day — a bill on the 31st
+  stays month-end even after February).
+- **Reminders** fire at the times you pick — to the assignee if the todo has
+  one, otherwise to everyone in the space.
+- **My Tasks** (bottom bar) gathers everything assigned to you across spaces.
+- **Alerts** shows reminders and space activity; the badge counts unread.
+
+## Install it on your phone
+
+**Android (Chrome):** open the app → browser menu (⋮) → **Add to Home
+screen** (or "Install app") → confirm. Then open it from the home screen.
+
+**iPhone / iPad (Safari):** open the app → **Share** button → **Add to Home
+Screen** → Add. *Notifications only work when the app was opened from the
+home screen — that's an Apple rule.*
+
+Then, in the app: **Settings → Turn on notifications** and allow when asked.
+That device now gets reminders even when the app is closed.
+
+## Removing people, leaving, deleting
+
+- Any member can invite; only the **owner** can rename/delete the space or
+  remove other members. Anyone can leave.
+- Removing someone also **kills all existing invite links**, so they can't
+  simply rejoin — make a fresh link for the people who remain.
+- Deleting a space deletes its todos for everyone. There's no undo.

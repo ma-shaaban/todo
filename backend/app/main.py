@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
+from app.routers import activity as activity_router
 from app.routers import auth as auth_router
 from app.routers import notifications as notifications_router
 from app.routers import push as push_router
@@ -137,6 +138,7 @@ app.include_router(spaces_router.router)
 app.include_router(todos_router.router)
 app.include_router(push_router.router)
 app.include_router(notifications_router.router)
+app.include_router(activity_router.router)
 
 
 # SPA serving — registered last so every /api/* + /healthz route above wins.
