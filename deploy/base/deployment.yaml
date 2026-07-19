@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: todo
+  annotations:
+    # Backstage (027): links this workload to the catalog component.
+    backstage.io/kubernetes-id: todo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: todo
+  template:
+    metadata:
+      labels:
+        app: todo
+    spec:
+      containers:
+        - name: todo
+          # The :dev tag never deploys — the staging/prod overlays always pin a
+          # real tag via `images:` (CI writeback / scripts/release.sh).
+          # APP_VERSION is baked into the image at build time (Dockerfile ARG),
+          # so there is no version env var to keep in sync here.
+          image: ghcr.io/ma-shaaban/todo:dev
+          # IfNotPresent: images may be side-loaded onto nodes (private GHCR
+          # fallback path) — Always would force a registry pull and fail.
+          imagePullPolicy: IfNotPresent
+          # NO resource requests/limits on purpose — the tenant LimitRange injects defaults.
+          env:
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef: { name: app-db, key: host }
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef: { name: app-db, key: port }
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef: { name: app-db, key: dbname }
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef: { name: app-db, key: username }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: app-db, key: password }
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 5

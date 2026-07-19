@@ -1,0 +1,57 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+
+# Preview-env image tag is injected by Flux postBuild.substitute.
+# ${PR_ID} and ${PR_SHA_SHORT} are Flux vars (ResourceSet inputs.id /
+# inputs.sha); kustomize renders them as-is (literal placeholders) — Flux
+# substitutes them at reconcile time.
+images:
+  - name: ghcr.io/ma-shaaban/todo
+    newTag: "pr-${PR_ID}-${PR_SHA_SHORT}"
+
+patches:
+  # Hostname: todo-pr-<n>.nezam.site  (todo is substituted by init.sh;
+  # ${PR_ID} survives init.sh and is substituted later by Flux).
+  - patch: |-
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: todo
+      spec:
+        hostnames:
+          - todo-pr-${PR_ID}.nezam.site
+
+  # 1 replica — preview envs are ephemeral; no need for HA.
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: todo
+        labels:
+          preview: "true"
+      spec:
+        replicas: 1
+        template:
+          metadata:
+            labels:
+              preview: "true"
+
+  # Add preview: "true" label to the Service for visibility.
+  - patch: |-
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: todo
+        labels:
+          preview: "true"
+
+  # Add preview: "true" label to the HTTPRoute for visibility.
+  - patch: |-
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: todo
+        labels:
+          preview: "true"

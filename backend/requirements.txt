@@ -1,0 +1,6 @@
+# Latest stable pins verified against PyPI at template creation (2026-07-12).
+fastapi==0.139.0
+uvicorn==0.51.0
+sqlalchemy==2.0.51
+alembic==1.18.5
+psycopg[binary]==3.3.4

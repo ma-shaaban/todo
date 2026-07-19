@@ -1,0 +1,19 @@
+# Backstage catalog stub — picked up by the platform portal's catalog
+# discovery. init.sh fills the placeholders.
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: todo
+  description: FastAPI + React app on the nezam platform
+  annotations:
+    # CI/CD tab: surfaces this repo's GitHub Actions runs in Backstage.
+    github.com/project-slug: ma-shaaban/todo
+    # Docs tab: render this repo's TechDocs (mkdocs.yml + docs/) inline.
+    backstage.io/techdocs-ref: dir:.
+    # Backstage Kubernetes plugin (027): matches the kubernetes-id annotation on
+    # the base Deployment + Service so the portal surfaces pod/replica status.
+    backstage.io/kubernetes-id: todo
+spec:
+  type: service
+  lifecycle: experimental
+  owner: ma-shaaban

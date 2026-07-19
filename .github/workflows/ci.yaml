@@ -1,0 +1,182 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    # Belt and braces with the [skip ci] writeback commit message below.
+    # NB: paths filters are NOT evaluated for tag pushes (GitHub docs), so
+    # releases always build even though the tagged commit only touches
+    # deploy/prod/kustomization.yaml.
+    paths-ignore:
+      - deploy/staging/kustomization.yaml
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Label-based filtering is not natively supported in `on.pull_request`
+    # triggers; the label condition is enforced in the preview-build job itself
+    # via `if: contains(github.event.pull_request.labels.*.name, 'preview')`.
+
+permissions:
+  contents: write # push the deploy PR branch (deploy/staging-<version>)
+  pull-requests: write # open the staging deploy-tag writeback PR onto main
+  packages: write # push to GHCR (same-repo PRs inherit write token; fork PRs
+                  # receive read-only token — preview builds are unsupported for
+                  # forks (security boundary; see README).
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        # Do NOT persist the checkout token as an http.<url>.extraheader.
+        # peter-evans/create-pull-request installs its own Authorization
+        # extraheader from its `token` input; if checkout leaves one behind
+        # too, current git sends BOTH headers and GitHub rejects the request
+        # with `Duplicate header: "Authorization"` → HTTP 400 → exit 128.
+        # No other step in this job relies on checkout's git credentials
+        # (docker/GHCR use their own auth; the sed edit is local-only), so
+        # dropping the persisted creds is safe and fixes the deploy-PR step.
+        with:
+          persist-credentials: false
+
+      - name: Compute image ref
+        id: ref
+        run: |
+          # GHCR requires a lowercase path; usernames may be mixed-case.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >>"$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >>"$GITHUB_OUTPUT"
+          else
+            echo "version=main-${GITHUB_SHA::7}" >>"$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.ref.outputs.image }}:${{ steps.ref.outputs.version }}
+          # Single source of truth for the running version — baked into the
+          # image (Dockerfile ARG VERSION → ENV APP_VERSION → /api/version).
+          build-args: |
+            VERSION=${{ steps.ref.outputs.version }}
+
+      # Staging deploy = a git commit on `main` (auditable; rollback = revert).
+      # Tag builds skip this — prod is pinned by scripts/release.sh instead.
+      #
+      # Trunk-based: `main` is the single source of truth (branch-protected, 1
+      # required review). CI must NOT direct-push to main, so it opens a
+      # short-lived PR that bumps ONLY deploy/staging/kustomization.yaml, then
+      # enables auto-merge (squash). The owner's single approval lands it.
+      #
+      # No build loop: on squash-merge we set the merge commit subject to the
+      # `[skip ci]` message, so the resulting push to main is ignored by this
+      # workflow (paths-ignore on deploy/staging/kustomization.yaml is a second
+      # guard, since the PR only touches that file).
+      - name: Update staging image tag
+        # Only on push to main (not pull_request events, not tags).
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        env:
+          VERSION: ${{ steps.ref.outputs.version }}
+        run: |
+          sed -i "s/newTag: .*/newTag: ${VERSION}/" deploy/staging/kustomization.yaml
+
+      - name: Open staging deploy PR
+        id: deploy_pr
+        if: github.event_name == 'push' && github.ref_type == 'branch'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          # Unique per run — short-commit-hash suffix appends the built sha so
+          # concurrent/rapid pushes don't collide on the PR branch.
+          branch: deploy/staging-${{ steps.ref.outputs.version }}
+          branch-suffix: short-commit-hash
+          delete-branch: true
+          # Commit ONLY the staging tag bump — ignore any other workspace churn.
+          add-paths: deploy/staging/kustomization.yaml
+          commit-message: "deploy: staging → ${{ steps.ref.outputs.version }} [skip ci]"
+          title: "deploy: staging → ${{ steps.ref.outputs.version }} [skip ci]"
+          body: |
+            Staging release audit trail (auto-merged — ADR-028, gate suspended).
+
+            Bumps `deploy/staging/kustomization.yaml` to `${{ steps.ref.outputs.version }}`.
+
+      # ── GATE SUSPENDED (ADR-028, owner ruling 2026-07-18: UX > security
+      # for now) ── This used to enable auto-merge (`--auto`) so the OWNER's
+      # one approval landed the deploy (main was branch-protected at 1 review;
+      # ADR-025). The owner suspended the gate: main is now created
+      # UNPROTECTED (scaffolder publish:github protectDefaultBranch:false) and
+      # CI merges its own deploy PR immediately. --subject still carries
+      # `[skip ci]` so the merge never re-triggers this workflow (no build
+      # loop; GITHUB_TOKEN pushes don't trigger workflows anyway).
+      # TO RESTORE THE GATE: add `--auto` back below AND re-enable
+      # protectDefaultBranch in the create-app scaffolder template.
+      - name: Merge staging deploy PR (gate suspended — ADR-028)
+        if: >
+          github.event_name == 'push' && github.ref_type == 'branch' &&
+          steps.deploy_pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.deploy_pr.outputs.pull-request-number }}
+          VERSION: ${{ steps.ref.outputs.version }}
+        run: |
+          gh pr merge "$PR_NUMBER" --squash \
+            --subject "deploy: staging → ${VERSION} [skip ci]"
+
+  # Preview-environment image build — triggered on labeled PRs only.
+  # IMPORTANT: this job runs ONLY for same-repo (head-branch) PRs; fork PRs
+  # receive a read-only GITHUB_TOKEN and cannot push to GHCR.  Fork PRs with
+  # the `preview` label are silently skipped (the label condition fails because
+  # the token cannot push — this is intentional; see README).
+  preview-build:
+    # Run only when the PR carries the `preview` label. This prevents accidental
+    # image builds on every PR and keeps preview slots within the platform cap (2
+    # concurrent) without requiring separate workflow files.
+    if: >
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'preview')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compute preview image ref
+        id: ref
+        # HEAD sha, not GITHUB_SHA: on pull_request events GITHUB_SHA is the
+        # synthetic MERGE commit — the platform's ResourceSetInputProvider
+        # exports the PR HEAD sha and substitutes PR_SHA_SHORT from it, so
+        # tagging with the merge sha would never match the deployed tag.
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          SHORT_SHA="${HEAD_SHA::7}"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >>"$GITHUB_OUTPUT"
+          echo "tag=pr-${PR_NUM}-${SHORT_SHA}"         >>"$GITHUB_OUTPUT"
+          echo "version=pr-${PR_NUM}-${SHORT_SHA}"     >>"$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.ref.outputs.image }}:${{ steps.ref.outputs.tag }}
+          # APP_VERSION baked in — matches tag so /api/version identifies the PR build.
+          build-args: |
+            VERSION=${{ steps.ref.outputs.version }}
+      # NOTE: no writeback step — preview envs are driven entirely by Flux
+      # ResourceSet postBuild.substitute (PR_ID + PR_SHA_SHORT injected by the
+      # platform's ResourceSetInputProvider); we never touch deploy/staging.

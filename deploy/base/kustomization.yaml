@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml
+  - service.yaml
+  - httproute.yaml
+# Backstage (027 T3): stamp backstage.io/kubernetes-id onto every resource
+# here AND the pod template, so the portal's Kubernetes plugin correlates the
+# running workloads to the app's catalog Component (catalog-info.yaml carries
+# the matching annotation).
+#   includeSelectors:false — do NOT add it to the Deployment's immutable
+#     selector or the Service selector (would break the rollout / re-target).
+#   includeTemplates:true  — DO add it to the pod template so Pods carry the
+#     label and show up on the tab too.
+labels:
+  - pairs:
+      backstage.io/kubernetes-id: todo
+    includeSelectors: false
+    includeTemplates: true

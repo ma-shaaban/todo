@@ -1,0 +1,13 @@
+site_name: todo
+
+# TechDocs config. Backstage renders these pages inline on the app's Docs tab
+# (see backstage.io/techdocs-ref in catalog-info.yaml). Written for the app's
+# owner — plain language, not developers.
+plugins:
+  - techdocs-core
+
+nav:
+  - What is todo?: index.md
+  - How it works: how-it-works.md
+  - Using your app: using-your-app.md
+  - Developing with AI: developing-with-ai.md
