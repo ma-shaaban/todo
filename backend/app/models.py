@@ -24,6 +24,48 @@ class User(Base):
     )
 
 
+class Space(Base):
+    __tablename__ = "spaces"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(sa.Text)
+    created_by: Mapped[uuid.UUID] = mapped_column(sa.Uuid, sa.ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=utcnow, server_default=sa.func.now()
+    )
+
+
+class SpaceMember(Base):
+    __tablename__ = "space_members"
+
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("spaces.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    role: Mapped[str] = mapped_column(sa.Text, default="member", server_default="member")
+    joined_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=utcnow, server_default=sa.func.now()
+    )
+
+
+class Invite(Base):
+    __tablename__ = "invites"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    code: Mapped[str] = mapped_column(sa.Text, unique=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(sa.Uuid, sa.ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=utcnow, server_default=sa.func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+
+
 class UserSession(Base):
     __tablename__ = "sessions"
 
