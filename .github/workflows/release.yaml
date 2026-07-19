@@ -33,6 +33,14 @@ permissions:
   contents: write # release commit + tag + GitHub Release
   packages: write # prod image to GHCR
 
+# One release at a time — and the pin step below rebases before tagging, so a
+# concurrent CI deploy-PR merge on main (hit live on the first run: the branch
+# push was rejected non-fast-forward while the tag went through) cannot reject
+# the push.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -93,8 +101,17 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add deploy/prod/kustomization.yaml
           git commit -m "release: v${VERSION}"
+          # main may have advanced while the image built (CI deploy-PR merges,
+          # ADR-028): rebase the pin commit onto latest main BEFORE tagging,
+          # retry a few times, and only tag what actually lands.
+          for attempt in 1 2 3; do
+            git pull --rebase origin main
+            if git push origin HEAD; then break; fi
+            [ "$attempt" = 3 ] && { echo "push kept failing after rebase"; exit 1; }
+            sleep 5
+          done
           git tag -m "release v${VERSION}" "v${VERSION}"
-          git push origin HEAD "refs/tags/v${VERSION}"
+          git push origin "refs/tags/v${VERSION}"
 
       - name: GitHub Release
         env:
