@@ -88,9 +88,16 @@ def list_spaces(user: CurrentUser, db: DbSession):
 
 
 def _open_todo_counts(db, space_ids) -> dict:
-    """Open-todo counts per space — implemented (with tests) in the todos PR;
-    the response shape is stable either way."""
-    return {}
+    if not space_ids:
+        return {}
+    import sqlalchemy as sa
+
+    return dict(
+        db.query(models.Todo.space_id, sa.func.count())
+        .filter(models.Todo.space_id.in_(space_ids), models.Todo.completed_at.is_(None))
+        .group_by(models.Todo.space_id)
+        .all()
+    )
 
 
 @router.post("/spaces", status_code=201)

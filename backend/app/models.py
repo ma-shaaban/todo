@@ -70,6 +70,48 @@ class Invite(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
 
+class Todo(Base):
+    __tablename__ = "todos"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("spaces.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(sa.Text)
+    notes: Mapped[str] = mapped_column(sa.Text, default="", server_default="")
+    due_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    priority: Mapped[int] = mapped_column(sa.SmallInteger, default=0, server_default="0")
+    assignee_id: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    recurrence: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    position: Mapped[float] = mapped_column(sa.Double, default=0.0, server_default="0")
+    completed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    completed_by: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=utcnow, server_default=sa.func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        sa.DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=sa.func.now()
+    )
+
+
+class Reminder(Base):
+    __tablename__ = "reminders"
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
+    todo_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("todos.id", ondelete="CASCADE"), index=True
+    )
+    remind_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), index=True)
+    fired_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+
+
 class UserSession(Base):
     __tablename__ = "sessions"
 
