@@ -2,20 +2,22 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { api } from '../api.js'
 import TodoItem from '../components/TodoItem.jsx'
+import { useLiveRefresh } from '../live.js'
 
 export default function MyTasks() {
   const [items, setItems] = useState(null)
   const [error, setError] = useState('')
   const navigate = useNavigate()
 
-  const load = () =>
+  const load = (silent) =>
     api('/api/me/todos')
       .then((d) => setItems(d.items))
-      .catch((e) => setError(e.message))
+      .catch((e) => !silent && setError(e.message))
 
   useEffect(() => {
     load()
   }, [])
+  useLiveRefresh(() => load(true))
 
   const toggle = async (todo) => {
     try {

@@ -33,6 +33,9 @@ doesn't exist on production.
   one, otherwise to everyone in the space.
 - **My Tasks** (bottom bar) gathers everything assigned to you across spaces.
 - **Alerts** shows reminders and space activity; the badge counts unread.
+- **Changes sync by themselves**: when the other person adds or completes
+  something, it appears on your screen within ~15 seconds — and instantly
+  when you re-open the app. No need to refresh.
 
 ## Install it on your phone
 

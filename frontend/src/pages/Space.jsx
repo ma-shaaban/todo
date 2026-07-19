@@ -5,6 +5,7 @@ import { useAuth } from '../auth.jsx'
 import TodoEditor from '../components/TodoEditor.jsx'
 import TodoItem from '../components/TodoItem.jsx'
 import { timeAgo } from '../format.js'
+import { useLiveRefresh } from '../live.js'
 
 function activityLine(e) {
   const who = e.actor?.display_name || 'Someone'
@@ -62,6 +63,22 @@ export default function Space() {
     load()
   }, [load])
 
+  // Other members' changes appear without a manual refresh: silently refetch
+  // whatever this page is showing (404 still flips to not-found — the space
+  // may have been deleted under us).
+  const showingDone = done !== null
+  const refresh = useCallback(() => {
+    api(`/api/spaces/${id}`)
+      .then(setSpace)
+      .catch((e) => e.status === 404 && setNotFound(true))
+    api(`/api/spaces/${id}/todos`)
+      .then((d) => setTodos(d.items))
+      .catch(() => {})
+    if (showingDone) loadDone()
+    if (tab === 'activity') loadActivity()
+  }, [id, tab, showingDone])
+  useLiveRefresh(refresh)
+
   // Deep link ?todo=<id> (from notifications) opens the editor.
   useEffect(() => {
     const target = params.get('todo')
@@ -76,6 +93,11 @@ export default function Space() {
 
   const loadDone = () =>
     api(`/api/spaces/${id}/todos?status=done`).then((d) => setDone(d.items)).catch(() => {})
+
+  const loadActivity = () =>
+    api(`/api/spaces/${id}/activity`)
+      .then((d) => setActivity(d.items))
+      .catch(() => setActivity((a) => a ?? []))
 
   const quickAdd = async (e) => {
     e.preventDefault()
@@ -198,9 +220,7 @@ export default function Space() {
           className={tab === 'activity' ? 'active' : ''}
           onClick={() => {
             setTab('activity')
-            api(`/api/spaces/${id}/activity`)
-              .then((d) => setActivity(d.items))
-              .catch(() => setActivity([]))
+            loadActivity()
           }}
         >
           Activity
