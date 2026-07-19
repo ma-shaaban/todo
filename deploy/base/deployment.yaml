@@ -25,7 +25,16 @@ spec:
           # IfNotPresent: images may be side-loaded onto nodes (private GHCR
           # fallback path) — Always would force a registry pull and fail.
           imagePullPolicy: IfNotPresent
-          # NO resource requests/limits on purpose — the tenant LimitRange injects defaults.
+          # Explicit resources: the LimitRange default (128Mi limit) OOM-killed
+          # the pod under concurrent argon2 password hashing. Sized for the
+          # API + scheduler + a few concurrent hashes, well within the tenant
+          # ResourceQuota.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 320Mi
           env:
             - name: DB_HOST
               valueFrom:
