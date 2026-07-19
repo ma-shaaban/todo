@@ -1,5 +1,5 @@
 ---
-focus: owner-reported fixes on top of v0.2.0 — 012 Repeat due-date hint (v0.2.1, in prod) and 013 live refresh (no more manual reload to see the other member's changes). Base: 10 PRs, 107 tests, E2E passed, scaffold evaluation delivered (2026-07-19)
+focus: v0.2.2 LIVE IN PRODUCTION — owner-reported fixes 012 (Repeat due-date hint, v0.2.1) + 013 (live refresh, v0.2.2), plus 014 (GitHub dropped two push events; ci.yaml gained a workflow_dispatch escape hatch, used live). Base: v0.2.0 with 10 PRs, 107 tests, E2E passed, scaffold evaluation delivered (2026-07-19)
 lastVerified: 2026-07-19
 ---
 
