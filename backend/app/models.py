@@ -58,7 +58,11 @@ class Invite(Base):
         sa.Uuid, sa.ForeignKey("spaces.id", ondelete="CASCADE"), index=True
     )
     code: Mapped[str] = mapped_column(sa.Text, unique=True)
-    created_by: Mapped[uuid.UUID] = mapped_column(sa.Uuid, sa.ForeignKey("users.id"))
+    # SET NULL: a deleted inviter account must not block deletion nor kill
+    # the link — the preview already falls back to "Someone".
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=utcnow, server_default=sa.func.now()
     )

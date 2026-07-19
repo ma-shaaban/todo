@@ -111,7 +111,10 @@ def test_revoked_invite(client, make_client):
     assert client.delete(f"/api/invites/{inv['id']}").status_code == 200
     bob = make_client()
     make_user(bob, "bob@example.com")
-    assert bob.get(f"/api/invites/{inv['code']}").json()["valid"] is False
+    preview = bob.get(f"/api/invites/{inv['code']}").json()
+    assert preview["valid"] is False
+    # A dead link must stop disclosing the space/inviter.
+    assert "space_name" not in preview
     assert bob.post(f"/api/invites/{inv['code']}/accept").status_code == 410
 
 
@@ -123,8 +126,58 @@ def test_expired_invite(client, make_client):
         conn.execute(sa.text("UPDATE invites SET expires_at = now() - interval '1 hour'"))
     bob = make_client()
     make_user(bob, "bob@example.com")
-    assert bob.get(f"/api/invites/{code}").json()["valid"] is False
+    preview = bob.get(f"/api/invites/{code}").json()
+    assert preview["valid"] is False
+    assert "space_name" not in preview
     assert bob.post(f"/api/invites/{code}/accept").status_code == 410
+
+
+def test_kicked_member_cannot_rejoin_with_old_code(client, make_client):
+    make_user(client, "ana@example.com")
+    space = create_space(client)
+    code = invite_code(client, space["id"])
+    bob_c = make_client()
+    bob = make_user(bob_c, "bob@example.com")
+    assert bob_c.post(f"/api/invites/{code}/accept").status_code == 200
+    # Owner kicks bob — every outstanding invite link dies with the kick.
+    assert client.delete(f"/api/spaces/{space['id']}/members/{bob['id']}").status_code == 200
+    assert bob_c.post(f"/api/invites/{code}/accept").status_code == 410
+    assert bob_c.get(f"/api/spaces/{space['id']}").status_code == 404
+
+
+def test_voluntary_leave_keeps_invites_alive(client, make_client):
+    make_user(client, "ana@example.com")
+    space = create_space(client)
+    code = invite_code(client, space["id"])
+    bob_c = make_client()
+    bob = make_user(bob_c, "bob@example.com")
+    bob_c.post(f"/api/invites/{code}/accept")
+    assert bob_c.delete(f"/api/spaces/{space['id']}/members/{bob['id']}").status_code == 200
+    # The link still works — bob left on his own terms.
+    assert bob_c.post(f"/api/invites/{code}/accept").status_code == 200
+
+
+def test_active_invite_cap(client):
+    make_user(client, "ana@example.com")
+    space = create_space(client)
+    for _ in range(10):
+        assert client.post(f"/api/spaces/{space['id']}/invites").status_code == 201
+    assert client.post(f"/api/spaces/{space['id']}/invites").status_code == 400
+    # Revoking one frees a slot (and dead rows are purged on create).
+    inv = client.get(f"/api/spaces/{space['id']}/invites").json()["items"][0]
+    client.delete(f"/api/invites/{inv['id']}")
+    assert client.post(f"/api/spaces/{space['id']}/invites").status_code == 201
+    with test_engine().begin() as conn:
+        # 10 live rows max: revoked/expired ones were physically deleted.
+        assert conn.execute(sa.text("SELECT count(*) FROM invites")).scalar() == 10
+
+
+def test_space_name_type_confusion_rejected(client):
+    make_user(client, "ana@example.com")
+    # JSON null / objects / numbers must not become literal space names.
+    assert client.post("/api/spaces", json={"name": None}).status_code == 422
+    assert client.post("/api/spaces", json={"name": {"a": 1}}).status_code == 422
+    assert client.post("/api/spaces", json={"name": 42}).status_code == 422
 
 
 def test_active_invites_listing(client):

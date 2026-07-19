@@ -9,15 +9,18 @@ import uuid
 from datetime import timedelta
 
 from fastapi import APIRouter, HTTPException
+from sqlalchemy.exc import IntegrityError
 
 from app import models
 from app.db import utcnow
 from app.deps import CurrentUser, DbSession
+from app.schemas import SpaceIn
 
 router = APIRouter(prefix="/api", tags=["spaces"])
 
 _MAX_SPACE_NAME = 100
 _INVITE_DAYS = 7
+_MAX_ACTIVE_INVITES = 10
 
 
 def parse_uuid(value: str) -> uuid.UUID:
@@ -85,23 +88,14 @@ def list_spaces(user: CurrentUser, db: DbSession):
 
 
 def _open_todo_counts(db, space_ids) -> dict:
-    """Open-todo counts per space. Todos arrive in the next migration; keep
-    this isolated so list_spaces doesn't change shape when they do."""
-    if not space_ids or not hasattr(models, "Todo"):
-        return {}
-    import sqlalchemy as sa
-
-    return dict(
-        db.query(models.Todo.space_id, sa.func.count())
-        .filter(models.Todo.space_id.in_(space_ids), models.Todo.completed_at.is_(None))
-        .group_by(models.Todo.space_id)
-        .all()
-    )
+    """Open-todo counts per space — implemented (with tests) in the todos PR;
+    the response shape is stable either way."""
+    return {}
 
 
 @router.post("/spaces", status_code=201)
-def create_space(body: dict, user: CurrentUser, db: DbSession):
-    name = _validate_space_name(str(body.get("name", "")))
+def create_space(body: SpaceIn, user: CurrentUser, db: DbSession):
+    name = _validate_space_name(body.name)
     space = models.Space(name=name, created_by=user.id)
     db.add(space)
     db.flush()
@@ -109,11 +103,20 @@ def create_space(body: dict, user: CurrentUser, db: DbSession):
     return {"id": str(space.id), "name": space.name, "my_role": "owner"}
 
 
+def _get_space_or_404(db, sid) -> models.Space:
+    """The membership row can outlive the space by a beat under concurrent
+    delete — never assume the FK guarantees existence across statements."""
+    space = db.get(models.Space, sid)
+    if space is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return space
+
+
 @router.get("/spaces/{space_id}")
 def space_detail(space_id: str, user: CurrentUser, db: DbSession):
     sid = parse_uuid(space_id)
     membership = get_membership(db, sid, user)
-    space = db.get(models.Space, sid)
+    space = _get_space_or_404(db, sid)
     members = (
         db.query(models.SpaceMember, models.User)
         .join(models.User, models.User.id == models.SpaceMember.user_id)
@@ -139,11 +142,11 @@ def space_detail(space_id: str, user: CurrentUser, db: DbSession):
 
 
 @router.patch("/spaces/{space_id}")
-def rename_space(space_id: str, body: dict, user: CurrentUser, db: DbSession):
+def rename_space(space_id: str, body: SpaceIn, user: CurrentUser, db: DbSession):
     sid = parse_uuid(space_id)
     require_owner(get_membership(db, sid, user))
-    space = db.get(models.Space, sid)
-    space.name = _validate_space_name(str(body.get("name", "")))
+    space = _get_space_or_404(db, sid)
+    space.name = _validate_space_name(body.name)
     return {"id": str(space.id), "name": space.name}
 
 
@@ -151,7 +154,7 @@ def rename_space(space_id: str, body: dict, user: CurrentUser, db: DbSession):
 def delete_space(space_id: str, user: CurrentUser, db: DbSession):
     sid = parse_uuid(space_id)
     require_owner(get_membership(db, sid, user))
-    db.delete(db.get(models.Space, sid))  # FKs cascade members/invites/todos
+    db.delete(_get_space_or_404(db, sid))  # FKs cascade members/invites/todos
     return {"ok": True}
 
 
@@ -169,6 +172,14 @@ def remove_member(space_id: str, member_id: str, user: CurrentUser, db: DbSessio
     if my_membership.role != "owner" and mid != user.id:
         raise HTTPException(status_code=403, detail="You can only remove yourself")
     db.delete(target)
+    if mid != user.id:
+        # A kick must stick: outstanding invite links are bearer tokens the
+        # removed member very likely holds (they're listed to every member),
+        # so revoke them all — remaining members can mint fresh ones. A
+        # voluntary leave keeps links alive (the leaver isn't being locked out).
+        db.query(models.Invite).filter(
+            models.Invite.space_id == sid, models.Invite.revoked_at.is_(None)
+        ).update({"revoked_at": utcnow()})
     return {"ok": True}
 
 
@@ -179,6 +190,24 @@ def remove_member(space_id: str, member_id: str, user: CurrentUser, db: DbSessio
 def create_invite(space_id: str, user: CurrentUser, db: DbSession):
     sid = parse_uuid(space_id)
     get_membership(db, sid, user)  # any member may invite
+    now = utcnow()
+    # Opportunistic cleanup (same pattern as expired sessions on login) so
+    # the table can't grow without bound...
+    db.query(models.Invite).filter(
+        models.Invite.space_id == sid,
+        (models.Invite.expires_at <= now) | models.Invite.revoked_at.is_not(None),
+    ).delete()
+    # ...and a hard cap on active links per space.
+    active = (
+        db.query(models.Invite)
+        .filter(models.Invite.space_id == sid)
+        .count()
+    )
+    if active >= _MAX_ACTIVE_INVITES:
+        raise HTTPException(
+            status_code=400,
+            detail="This space already has too many active invite links — revoke one first",
+        )
     invite = models.Invite(
         space_id=sid,
         code=secrets.token_urlsafe(16),
@@ -243,15 +272,19 @@ def _load_invite(db, code: str) -> models.Invite:
 
 @router.get("/invites/{code}")
 def invite_preview(code: str, db: DbSession):
-    """Public: what a recipient sees before signing in."""
+    """Public: what a recipient sees before signing in. A dead link stops
+    disclosing the space/inviter — revocation must also cut the metadata."""
     invite = _load_invite(db, code)
+    if invite.revoked_at is not None or invite.expires_at <= utcnow():
+        return {"valid": False}
     space = db.get(models.Space, invite.space_id)
     inviter = db.get(models.User, invite.created_by)
-    valid = invite.revoked_at is None and invite.expires_at > utcnow()
+    if space is None:
+        return {"valid": False}
     return {
         "space_name": space.name,
         "inviter_name": inviter.display_name if inviter else "Someone",
-        "valid": valid,
+        "valid": True,
     }
 
 
@@ -262,4 +295,14 @@ def accept_invite(code: str, user: CurrentUser, db: DbSession):
         raise HTTPException(status_code=410, detail="This invite link is no longer valid")
     if db.get(models.SpaceMember, (invite.space_id, user.id)) is None:
         db.add(models.SpaceMember(space_id=invite.space_id, user_id=user.id, role="member"))
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            # Either we lost a duplicate-accept race (fine — membership
+            # exists) or the space was deleted from under the invite.
+            if db.get(models.Space, invite.space_id) is None:
+                raise HTTPException(
+                    status_code=410, detail="This invite link is no longer valid"
+                )
     return {"space_id": str(invite.space_id)}
