@@ -15,6 +15,7 @@ from app import models
 from app.db import utcnow
 from app.deps import CurrentUser, DbSession
 from app.schemas import SpaceIn
+from app.services.activity import record
 
 router = APIRouter(prefix="/api", tags=["spaces"])
 
@@ -154,6 +155,7 @@ def rename_space(space_id: str, body: SpaceIn, user: CurrentUser, db: DbSession)
     require_owner(get_membership(db, sid, user))
     space = _get_space_or_404(db, sid)
     space.name = _validate_space_name(body.name)
+    record(db, sid, user, "space_renamed", name=space.name)
     return {"id": str(space.id), "name": space.name}
 
 
@@ -178,6 +180,14 @@ def remove_member(space_id: str, member_id: str, user: CurrentUser, db: DbSessio
         raise HTTPException(status_code=400, detail="Owners can delete the space instead")
     if my_membership.role != "owner" and mid != user.id:
         raise HTTPException(status_code=403, detail="You can only remove yourself")
+    if mid == user.id:
+        record(db, sid, user, "member_left")
+    else:
+        removed_user = db.get(models.User, mid)
+        record(
+            db, sid, user, "member_removed",
+            removed_name=removed_user.display_name if removed_user else "?",
+        )
     db.delete(target)
     if mid != user.id:
         # A kick must stick: outstanding invite links are bearer tokens the
@@ -319,6 +329,7 @@ def accept_invite(code: str, user: CurrentUser, db: DbSession, background: Backg
                     status_code=410, detail="This invite link is no longer valid"
                 )
         else:
+            record(db, invite.space_id, user, "member_joined")
             space = db.get(models.Space, invite.space_id)
             if space is not None:
                 from app.services.notify import notify_users, send_pushes

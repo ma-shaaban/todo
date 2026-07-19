@@ -13,6 +13,7 @@ from app.db import utcnow
 from app.deps import CurrentUser, DbSession
 from app.routers.spaces import get_membership, parse_uuid
 from app.schemas import TodoCreate, TodoPatch
+from app.services.activity import record
 from app.services.recurrence import RECURRENCES, next_due
 
 router = APIRouter(prefix="/api", tags=["todos"])
@@ -149,6 +150,12 @@ def _serialize_todos(db, todos: list) -> list[dict]:
 
 
 def _notify_assignment(db, background: BackgroundTasks, todo: models.Todo, actor) -> None:
+    if todo.assignee_id:
+        assignee = db.get(models.User, todo.assignee_id)
+        record(
+            db, todo.space_id, actor, "todo_assigned", todo=todo,
+            title=todo.title, assignee_name=assignee.display_name if assignee else "?",
+        )
     if todo.assignee_id and todo.assignee_id != actor.id:
         from app.services.notify import notify_users, send_pushes
 
@@ -237,6 +244,7 @@ def create_todo(
     for remind_at in reminders:
         db.add(models.Reminder(todo_id=todo.id, remind_at=remind_at))
     db.flush()
+    record(db, sid, user, "todo_created", todo=todo, title=todo.title)
     _notify_assignment(db, background, todo, user)
     return _serialize_todos(db, [todo])[0]
 
@@ -301,6 +309,7 @@ def patch_todo(
 @router.delete("/todos/{todo_id}")
 def delete_todo(todo_id: str, user: CurrentUser, db: DbSession):
     todo = _get_todo_for_member(db, todo_id, user)
+    record(db, todo.space_id, user, "todo_deleted", title=todo.title)
     db.delete(todo)  # reminders cascade
     return {"ok": True}
 
@@ -356,6 +365,7 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: Ba
         next_out = _serialize_todos(db, [nxt])[0]
 
     if claimed is not None:
+        record(db, todo.space_id, user, "todo_completed", todo=todo, title=todo.title)
         from app.services.notify import notify_users, send_pushes
 
         prepared = notify_users(
@@ -393,6 +403,7 @@ def reopen_todo(todo_id: str, user: CurrentUser, db: DbSession):
         ).delete(synchronize_session=False)
     todo.completed_at = None
     todo.completed_by = None
+    record(db, todo.space_id, user, "todo_reopened", todo=todo, title=todo.title)
     db.flush()
     return _serialize_todos(db, [todo])[0]
 

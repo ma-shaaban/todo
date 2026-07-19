@@ -4,6 +4,34 @@ import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import TodoEditor from '../components/TodoEditor.jsx'
 import TodoItem from '../components/TodoItem.jsx'
+import { timeAgo } from '../format.js'
+
+function activityLine(e) {
+  const who = e.actor?.display_name || 'Someone'
+  const t = e.data?.title
+  switch (e.type) {
+    case 'todo_created':
+      return `${who} added “${t}”`
+    case 'todo_completed':
+      return `${who} completed “${t}”`
+    case 'todo_reopened':
+      return `${who} reopened “${t}”`
+    case 'todo_deleted':
+      return `${who} deleted “${t}”`
+    case 'todo_assigned':
+      return `${who} assigned “${t}” to ${e.data?.assignee_name}`
+    case 'member_joined':
+      return `${who} joined`
+    case 'member_left':
+      return `${who} left`
+    case 'member_removed':
+      return `${who} removed ${e.data?.removed_name}`
+    case 'space_renamed':
+      return `${who} renamed the space to “${e.data?.name}”`
+    default:
+      return who
+  }
+}
 
 export default function Space() {
   const { id } = useParams()
@@ -14,6 +42,7 @@ export default function Space() {
   const [todos, setTodos] = useState([])
   const [done, setDone] = useState(null)
   const [tab, setTab] = useState('todos')
+  const [activity, setActivity] = useState(null)
   const [quick, setQuick] = useState('')
   const [editing, setEditing] = useState(undefined) // undefined=closed, null=new, todo=edit
   const [invite, setInvite] = useState(null)
@@ -165,6 +194,17 @@ export default function Space() {
         >
           Members ({members.length})
         </button>
+        <button
+          className={tab === 'activity' ? 'active' : ''}
+          onClick={() => {
+            setTab('activity')
+            api(`/api/spaces/${id}/activity`)
+              .then((d) => setActivity(d.items))
+              .catch(() => setActivity([]))
+          }}
+        >
+          Activity
+        </button>
       </div>
 
       {error && <div className="error">{error}</div>}
@@ -248,6 +288,20 @@ export default function Space() {
           )}
         </>
       )}
+
+      {tab === 'activity' &&
+        (activity === null ? (
+          <div className="empty">Loading…</div>
+        ) : activity.length === 0 ? (
+          <div className="empty">No activity yet.</div>
+        ) : (
+          activity.map((e) => (
+            <div className="card" key={e.id}>
+              {activityLine(e)}
+              <div className="meta">{timeAgo(e.created_at)}</div>
+            </div>
+          ))
+        ))}
 
       {editing !== undefined && (
         <TodoEditor

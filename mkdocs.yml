@@ -10,4 +10,5 @@ nav:
   - What is todo?: index.md
   - How it works: how-it-works.md
   - Using your app: using-your-app.md
+  - Google sign-in setup: google-signin-setup.md
   - Developing with AI: developing-with-ai.md
