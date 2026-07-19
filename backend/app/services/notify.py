@@ -1,9 +1,17 @@
-"""In-app notifications + web push delivery."""
+"""In-app notifications + web push delivery.
+
+Two-phase design: `notify_users` inserts notification rows inside the
+caller's transaction and returns *prepared sends*; `send_pushes` does the
+actual network delivery and must run AFTER that transaction commits
+(FastAPI BackgroundTasks in request paths, post-commit in the poller).
+Pushing before commit would notify people about actions that might roll
+back — and a slow push service must never hold a DB transaction open."""
 
 import json
 import logging
 
 from pywebpush import WebPushException, webpush  # noqa: F401 (tests monkeypatch module attr)
+from sqlalchemy.orm import Session as OrmSession
 
 from app import models
 from app.services.vapid import get_vapid
@@ -11,15 +19,18 @@ from app.services.vapid import get_vapid
 log = logging.getLogger(__name__)
 
 _MAX_FAILURES = 5
+_SEND_TIMEOUT_SECONDS = 5
+_TTL_REMINDER = 3600  # a late reminder is better than a dropped one…
+_TTL_SOCIAL = 86400  # …and social events can wait a day for an offline phone
 
 
 def notify_users(db, user_ids, *, type: str, title: str, body: str = "", url: str = "/",
-                 space_id=None, todo_id=None, exclude=None) -> None:
-    """Insert an in-app notification and push to every device of each user.
-    Never raises — a notification failure must not fail the triggering action."""
+                 space_id=None, todo_id=None, exclude=None) -> list[dict]:
+    """Insert in-app notification rows (committed with the caller's
+    transaction) and return prepared web-push sends for `send_pushes`."""
     targets = [uid for uid in set(user_ids) if uid != exclude]
     if not targets:
-        return
+        return []
     for uid in targets:
         db.add(
             models.Notification(
@@ -28,40 +39,85 @@ def notify_users(db, user_ids, *, type: str, title: str, body: str = "", url: st
             )
         )
     db.flush()
-    payload = json.dumps({"title": title, "body": body, "url": url, "tag": f"{type}-{todo_id or space_id}"})
+    payload = json.dumps(
+        {"title": title, "body": body, "url": url, "tag": f"{type}-{todo_id or space_id}"}
+    )
+    ttl = _TTL_REMINDER if type == "reminder" else _TTL_SOCIAL
     subs = (
         db.query(models.PushSubscription)
         .filter(models.PushSubscription.user_id.in_(targets))
         .all()
     )
-    for sub in subs:
-        _send_push(db, sub, payload)
+    return [
+        {
+            "id": str(s.id),
+            "endpoint": s.endpoint,
+            "p256dh": s.p256dh,
+            "auth": s.auth,
+            "payload": payload,
+            "ttl": ttl,
+        }
+        for s in subs
+    ]
 
 
-def _send_push(db, sub: models.PushSubscription, payload: str) -> None:
-    vapid = get_vapid()
+def send_pushes(prepared: list[dict]) -> None:
+    """Deliver prepared sends. Runs outside any request transaction; prunes
+    dead/flaky subscriptions in its own session. Never raises."""
+    if not prepared:
+        return
     try:
-        # Module-global lookup at call time — tests monkeypatch notify.webpush.
-        webpush(
-            subscription_info={
-                "endpoint": sub.endpoint,
-                "keys": {"p256dh": sub.p256dh, "auth": sub.auth},
-            },
-            data=payload,
-            vapid_private_key=vapid["private"],
-            vapid_claims={"sub": vapid["subject"]},
-        )
-        if sub.failed_count:
-            sub.failed_count = 0
-    except WebPushException as exc:
-        status = getattr(exc.response, "status_code", None)
-        if status in (404, 410):
-            # The browser dropped the subscription — clean up.
-            db.delete(sub)
-        else:
-            sub.failed_count = (sub.failed_count or 0) + 1
-            if sub.failed_count >= _MAX_FAILURES:
-                db.delete(sub)
-        log.warning("web push failed (status=%s endpoint=%s…)", status, sub.endpoint[:40])
+        vapid = get_vapid()
     except Exception:
-        log.exception("unexpected web push failure")
+        log.exception("cannot load VAPID config — skipping %d pushes", len(prepared))
+        return
+    dead, flaky, ok = [], [], []
+    for p in prepared:
+        try:
+            # Module-global lookup at call time — tests monkeypatch notify.webpush.
+            webpush(
+                subscription_info={
+                    "endpoint": p["endpoint"],
+                    "keys": {"p256dh": p["p256dh"], "auth": p["auth"]},
+                },
+                data=p["payload"],
+                vapid_private_key=vapid["private"],
+                vapid_claims={"sub": vapid["subject"]},
+                ttl=p["ttl"],
+                timeout=_SEND_TIMEOUT_SECONDS,
+            )
+            ok.append(p["id"])
+        except WebPushException as exc:
+            status = getattr(exc.response, "status_code", None)
+            if status in (404, 410):
+                dead.append(p["id"])  # browser dropped the subscription
+            else:
+                flaky.append(p["id"])
+            log.warning("web push failed (status=%s endpoint=%s…)", status, p["endpoint"][:40])
+        except Exception:
+            log.exception("unexpected web push failure")
+    if not (dead or flaky or ok):
+        return
+    try:
+        import uuid as _uuid
+
+        from app.db import get_engine
+
+        with OrmSession(get_engine()) as db:
+            if dead:
+                db.query(models.PushSubscription).filter(
+                    models.PushSubscription.id.in_([_uuid.UUID(i) for i in dead])
+                ).delete(synchronize_session=False)
+            for sid in flaky:
+                sub = db.get(models.PushSubscription, _uuid.UUID(sid))
+                if sub is not None:
+                    sub.failed_count = (sub.failed_count or 0) + 1
+                    if sub.failed_count >= _MAX_FAILURES:
+                        db.delete(sub)
+            for sid in ok:
+                sub = db.get(models.PushSubscription, _uuid.UUID(sid))
+                if sub is not None and sub.failed_count:
+                    sub.failed_count = 0
+            db.commit()
+    except Exception:
+        log.exception("push subscription bookkeeping failed")

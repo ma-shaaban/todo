@@ -39,7 +39,13 @@ async def _lifespan(app: FastAPI):
         yield
     finally:
         stop.set()
-        await task
+        try:
+            # Bounded: a push send stuck in a worker thread must not wedge
+            # pod shutdown until the SIGKILL.
+            await asyncio.wait_for(task, timeout=10)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            task.cancel()
+            logger.warning("reminder poller did not stop in time — cancelled")
 
 
 app = FastAPI(title="fastapi-react-app", lifespan=_lifespan)

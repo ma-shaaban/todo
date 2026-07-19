@@ -15,49 +15,62 @@ log = logging.getLogger("scheduler")
 TICK_SECONDS = 30.0
 
 
+_CLAIM_BATCH = 100
+
+
 def tick_once() -> int:
-    """Claim and fire due reminders. Returns the number delivered. Sync —
-    call from a worker thread."""
+    """Claim due reminders and create their notifications in ONE transaction
+    (a crash rolls back the claim too — nothing is ever silently lost), then
+    deliver web pushes after commit. Returns the number fired. Sync — call
+    from a worker thread."""
     from app import models
     from app.db import get_engine
-    from app.services.notify import notify_users
+    from app.services.notify import notify_users, send_pushes
 
     fired = 0
+    prepared: list[dict] = []
     with OrmSession(get_engine()) as db:
         claimed = db.execute(
             sa.text(
-                "UPDATE reminders SET fired_at = now() "
-                "WHERE fired_at IS NULL AND remind_at <= now() "
-                "RETURNING todo_id"
+                "UPDATE reminders SET fired_at = now() WHERE id IN ("
+                "  SELECT id FROM reminders"
+                "  WHERE fired_at IS NULL AND remind_at <= now()"
+                "  ORDER BY remind_at"
+                f"  LIMIT {_CLAIM_BATCH}"
+                "  FOR UPDATE SKIP LOCKED"
+                ") RETURNING todo_id"
             )
         ).all()
-        db.commit()
         for (todo_id,) in claimed:
-            todo = db.get(models.Todo, todo_id)
-            if todo is None or todo.completed_at is not None:
-                continue  # claimed so it never re-fires, but nothing to say
-            if todo.assignee_id:
-                targets = [todo.assignee_id]
-            else:
-                targets = [
-                    m.user_id
-                    for m in db.query(models.SpaceMember)
-                    .filter(models.SpaceMember.space_id == todo.space_id)
-                    .all()
-                ]
-            due_text = "This todo is due" if todo.due_at is None else "Don't forget this todo"
-            notify_users(
-                db,
-                targets,
-                type="reminder",
-                title=f"⏰ {todo.title}",
-                body=due_text,
-                space_id=todo.space_id,
-                todo_id=todo.id,
-                url=f"/spaces/{todo.space_id}?todo={todo.id}",
-            )
-            fired += 1
-        db.commit()
+            try:
+                todo = db.get(models.Todo, todo_id)
+                if todo is None or todo.completed_at is not None:
+                    continue  # claimed so it never re-fires, but nothing to say
+                if todo.assignee_id:
+                    targets = [todo.assignee_id]
+                else:
+                    targets = [
+                        m.user_id
+                        for m in db.query(models.SpaceMember)
+                        .filter(models.SpaceMember.space_id == todo.space_id)
+                        .all()
+                    ]
+                prepared += notify_users(
+                    db,
+                    targets,
+                    type="reminder",
+                    title=f"⏰ {todo.title}",
+                    body="Don't forget this todo",
+                    space_id=todo.space_id,
+                    todo_id=todo.id,
+                    url=f"/spaces/{todo.space_id}?todo={todo.id}",
+                )
+                fired += 1
+            except Exception:
+                # One bad row must not sink the whole batch.
+                log.exception("failed to prepare reminder for todo %s", todo_id)
+        db.commit()  # claims + notification rows land atomically
+    send_pushes(prepared)  # network I/O strictly after the transaction
     return fired
 
 

@@ -5,7 +5,7 @@ import uuid
 from datetime import timedelta, timezone
 
 import sqlalchemy as sa
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sqlalchemy.exc import IntegrityError
 
 from app import models
@@ -148,11 +148,11 @@ def _serialize_todos(db, todos: list) -> list[dict]:
     return [_todo_out(t, users, reminders_by_todo[t.id]) for t in todos]
 
 
-def _notify_assignment(db, todo: models.Todo, actor) -> None:
+def _notify_assignment(db, background: BackgroundTasks, todo: models.Todo, actor) -> None:
     if todo.assignee_id and todo.assignee_id != actor.id:
-        from app.services.notify import notify_users
+        from app.services.notify import notify_users, send_pushes
 
-        notify_users(
+        prepared = notify_users(
             db,
             [todo.assignee_id],
             type="assigned",
@@ -161,6 +161,8 @@ def _notify_assignment(db, todo: models.Todo, actor) -> None:
             todo_id=todo.id,
             url=f"/spaces/{todo.space_id}?todo={todo.id}",
         )
+        # Network delivery only after this request's transaction commits.
+        background.add_task(send_pushes, prepared)
 
 
 def _get_todo_for_member(db, todo_id: str, user) -> models.Todo:
@@ -202,7 +204,9 @@ def list_todos(space_id: str, user: CurrentUser, db: DbSession, status: str = "o
 
 
 @router.post("/spaces/{space_id}/todos", status_code=201)
-def create_todo(space_id: str, body: TodoCreate, user: CurrentUser, db: DbSession):
+def create_todo(
+    space_id: str, body: TodoCreate, user: CurrentUser, db: DbSession, background: BackgroundTasks
+):
     sid = parse_uuid(space_id)
     get_membership(db, sid, user)
     now = utcnow()
@@ -233,12 +237,14 @@ def create_todo(space_id: str, body: TodoCreate, user: CurrentUser, db: DbSessio
     for remind_at in reminders:
         db.add(models.Reminder(todo_id=todo.id, remind_at=remind_at))
     db.flush()
-    _notify_assignment(db, todo, user)
+    _notify_assignment(db, background, todo, user)
     return _serialize_todos(db, [todo])[0]
 
 
 @router.patch("/todos/{todo_id}")
-def patch_todo(todo_id: str, body: TodoPatch, user: CurrentUser, db: DbSession):
+def patch_todo(
+    todo_id: str, body: TodoPatch, user: CurrentUser, db: DbSession, background: BackgroundTasks
+):
     todo = _get_todo_for_member(db, todo_id, user)
     fields = body.model_fields_set
     now = utcnow()
@@ -257,7 +263,7 @@ def patch_todo(todo_id: str, body: TodoPatch, user: CurrentUser, db: DbSession):
         previous_assignee = todo.assignee_id
         todo.assignee_id = _clean_assignee(db, todo.space_id, body.assignee_id)
         if todo.assignee_id and todo.assignee_id != previous_assignee:
-            _notify_assignment(db, todo, user)
+            _notify_assignment(db, background, todo, user)
     if "recurrence" in fields:
         todo.recurrence = _clean_recurrence(body.recurrence)
     if "position" in fields and body.position is not None:
@@ -300,7 +306,7 @@ def delete_todo(todo_id: str, user: CurrentUser, db: DbSession):
 
 
 @router.post("/todos/{todo_id}/complete")
-def complete_todo(todo_id: str, user: CurrentUser, db: DbSession):
+def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: BackgroundTasks):
     todo = _get_todo_for_member(db, todo_id, user)
     now = utcnow()
     # Atomic claim: only one caller wins, so a double-tap can't double-spawn
@@ -350,18 +356,19 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession):
         next_out = _serialize_todos(db, [nxt])[0]
 
     if claimed is not None:
-        from app.services.notify import notify_users
+        from app.services.notify import notify_users, send_pushes
 
-        notify_users(
+        prepared = notify_users(
             db,
             [uid for uid in (todo.created_by, todo.assignee_id) if uid],
             type="completed",
             title=f"✅ {user.display_name} completed: {todo.title}",
             space_id=todo.space_id,
             todo_id=todo.id,
-            url=f"/spaces/{todo.space_id}",
+            url=f"/spaces/{todo.space_id}?todo={todo.id}",
             exclude=user.id,
         )
+        background.add_task(send_pushes, prepared)
 
     return {"completed": _serialize_todos(db, [todo])[0], "next": next_out}
 

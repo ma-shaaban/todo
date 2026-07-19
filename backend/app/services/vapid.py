@@ -56,6 +56,13 @@ def get_vapid() -> dict:
             ).all()
         )
         if _META_PUBLIC not in rows or _META_PRIVATE not in rows:
+            if rows:
+                # Half a keypair is corruption — mixing halves of two pairs
+                # would break every push silently. Start over.
+                conn.execute(
+                    sa.text("DELETE FROM app_meta WHERE key IN (:p, :s)"),
+                    {"p": _META_PUBLIC, "s": _META_PRIVATE},
+                )
             public, private = _generate()
             conn.execute(
                 sa.text(
@@ -70,7 +77,9 @@ def get_vapid() -> dict:
                     {"p": _META_PUBLIC, "s": _META_PRIVATE},
                 ).all()
             )
-            log.info("generated dev VAPID keypair (no VAPID_* env present)")
+            # In staging/prod this means the app-push Secret is missing —
+            # subscriptions made against this key strand when it appears.
+            log.warning("VAPID_* env absent — using generated keypair from app_meta")
     _cache = {"public": rows[_META_PUBLIC], "private": rows[_META_PRIVATE], "subject": subject}
     return _cache
 

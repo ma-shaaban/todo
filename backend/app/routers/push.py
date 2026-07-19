@@ -45,6 +45,16 @@ def subscribe(body: SubscriptionIn, user: CurrentUser, db: DbSession):
         existing.auth = body.keys.auth
         existing.failed_count = 0
     else:
+        # Cap devices per user (oldest evicted): bounds table growth and the
+        # outbound-request amplification any single account can cause.
+        mine = (
+            db.query(models.PushSubscription)
+            .filter(models.PushSubscription.user_id == user.id)
+            .order_by(models.PushSubscription.created_at.desc())
+            .all()
+        )
+        for stale in mine[9:]:
+            db.delete(stale)
         db.add(
             models.PushSubscription(
                 user_id=user.id,
