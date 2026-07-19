@@ -5,15 +5,50 @@ take precedence over the SPA catch-all at the bottom)."""
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 import psycopg
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import OperationalError, ProgrammingError
+
+from app.routers import auth as auth_router
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="fastapi-react-app")
+
+
+@app.middleware("http")
+async def csrf_origin_guard(request: Request, call_next):
+    """Reject state-changing requests whose Origin doesn't match the host.
+    With SameSite=Lax session cookies this blocks cross-site form posts;
+    requests without an Origin header (curl, same-origin GETs) pass."""
+    if request.method in ("POST", "PATCH", "PUT", "DELETE"):
+        origin = request.headers.get("origin")
+        if origin:
+            origin_host = urlparse(origin).hostname
+            request_host = (request.headers.get("host") or "").split(":")[0]
+            # An unparseable Origin (including the literal "null" from
+            # sandboxed iframes) is definitively cross-origin — fail closed.
+            if origin_host is None or not request_host or origin_host != request_host:
+                return JSONResponse(
+                    status_code=403, content={"detail": "Cross-origin request rejected"}
+                )
+    return await call_next(request)
+
+
+@app.exception_handler(OperationalError)
+@app.exception_handler(ProgrammingError)
+async def _db_error_handler(request: Request, exc: Exception):
+    """DB unreachable or schema not migrated yet (entrypoint.sh keeps retrying
+    migrations in the background). Same posture as /api/db-check: generic JSON,
+    details only in server logs — and never a text/plain 500 on /api/*."""
+    logger.exception("database error on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=503, content={"detail": "Service temporarily unavailable — try again shortly"}
+    )
 
 
 def _db_conninfo() -> dict:
@@ -62,6 +97,11 @@ def healthz():
     """Readiness: process is up. Deliberately DB-free — a brief DB outage must
     not take the pod out of rotation (the SPA and /api/hello still work)."""
     return {"status": "ok"}
+
+
+# Feature routers — registered here, above the SPA catch-all, per the house
+# rule that API routes precede it (implementations live in app/routers/).
+app.include_router(auth_router.router)
 
 
 # SPA serving — registered last so every /api/* + /healthz route above wins.
