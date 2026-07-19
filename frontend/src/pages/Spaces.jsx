@@ -18,13 +18,21 @@ export default function Spaces() {
       .then((d) => setSpaces(d.items))
       .catch((e) => !silent && setError(e.message))
 
-  useEffect(() => {
-    load()
+  const loadTemplates = () =>
     api('/api/space-templates')
       .then((d) => setTemplates(d.items))
       .catch(() => {})
+
+  useEffect(() => {
+    load()
+    loadTemplates()
   }, [])
-  useLiveRefresh(() => load(true))
+  useLiveRefresh(() => {
+    load(true)
+    // Self-heal a failed first fetch (e.g. flaky network on PWA resume) —
+    // otherwise the template section silently never appears.
+    if (templates.length === 0) loadTemplates()
+  })
 
   const create = async (e) => {
     e.preventDefault()
@@ -117,7 +125,15 @@ export default function Spaces() {
       )}
 
       {tpl && (
-        <div className="sheet-backdrop" onClick={(e) => e.target === e.currentTarget && !busy && setTpl(null)}>
+        <div
+          className="sheet-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !busy) {
+              setTpl(null)
+              setError('')
+            }
+          }}
+        >
           <div className="sheet">
             <h2>
               {tpl.icon} {tpl.name}
@@ -162,7 +178,10 @@ export default function Spaces() {
                   className="btn secondary"
                   type="button"
                   disabled={busy}
-                  onClick={() => setTpl(null)}
+                  onClick={() => {
+                    setTpl(null)
+                    setError('')
+                  }}
                 >
                   Cancel
                 </button>

@@ -90,6 +90,34 @@ def fetch_timings(city: str, country: str, method: int | None) -> dict:
     }
 
 
+_MAX_CONFIG_STR = 100
+_METHODS = set(range(0, 24))
+
+
+def validate_config(cfg: dict) -> dict:
+    """Normalized config, or ValueError with a user-facing message. Probes
+    the real API once so a location that can't work is rejected up front
+    instead of failing invisibly on every tick."""
+    city = str(cfg.get("city") or "").strip()
+    country = str(cfg.get("country") or "").strip()
+    if not city or not country:
+        raise ValueError("Please set a city and a country")
+    if len(city) > _MAX_CONFIG_STR or len(country) > _MAX_CONFIG_STR:
+        raise ValueError("City/country names are too long")
+    method = cfg.get("method")
+    if method is not None:
+        if not isinstance(method, int) or isinstance(method, bool) or method not in _METHODS:
+            raise ValueError("Unknown calculation method")
+    try:
+        fetch_timings(city, country, method)
+    except Exception:
+        raise ValueError(
+            "Couldn't fetch prayer times for that location — check the "
+            "city and country (or try again in a minute)"
+        )
+    return {"city": city, "country": country, "method": method}
+
+
 def _parse_local(hhmm: str, day, tz) -> datetime | None:
     m = _TIME_RE.match(hhmm.strip())
     if not m:

@@ -14,9 +14,14 @@ PUT /api/spaces/{id}/automation stays as the direct API.
 
 from app.services.automations import prayers
 
-PROVIDERS = {
-    "islamic_prayers": prayers.run,
+# type key → provider module. A module supplies run(db, space, now),
+# validate_config(cfg) -> normalized dict (ValueError = user-facing 400),
+# and TEMPLATE metadata for the create-space screen.
+MODULES = {
+    "islamic_prayers": prayers,
 }
 
+PROVIDERS = {key: mod.run for key, mod in MODULES.items()}
+
 # Create-space templates, rendered generically by the frontend.
-TEMPLATES = [prayers.TEMPLATE]
+TEMPLATES = [mod.TEMPLATE for mod in MODULES.values()]

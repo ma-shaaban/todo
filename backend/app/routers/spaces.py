@@ -210,44 +210,22 @@ def delete_space(space_id: str, user: CurrentUser, db: DbSession):
     return {"ok": True}
 
 
-_MAX_AUTOMATION_STR = 100
-_ALADHAN_METHODS = set(range(0, 24))
-
-
 def _validated_automation(atype: str, cfg: dict) -> tuple[str, dict]:
     """Normalized (type, config) or a friendly 400 — shared by the space
-    template path and the direct PUT."""
-    from app.services.automations import PROVIDERS
+    template path and the direct PUT. Validation belongs to the provider
+    (each module ships validate_config), so a future template isn't forced
+    through prayer-specific rules."""
+    from app.services.automations import MODULES
 
-    if atype not in PROVIDERS:
+    module = MODULES.get(atype)
+    if module is None:
         raise HTTPException(
-            status_code=400, detail=f"Unknown template: {', '.join(sorted(PROVIDERS))}"
+            status_code=400, detail=f"Unknown template: {', '.join(sorted(MODULES))}"
         )
-    city = str(cfg.get("city") or "").strip()
-    country = str(cfg.get("country") or "").strip()
-    if not city or not country:
-        raise HTTPException(status_code=400, detail="Please set a city and a country")
-    if len(city) > _MAX_AUTOMATION_STR or len(country) > _MAX_AUTOMATION_STR:
-        raise HTTPException(status_code=400, detail="City/country names are too long")
-    method = cfg.get("method")
-    if method is not None:
-        if not isinstance(method, int) or method not in _ALADHAN_METHODS:
-            raise HTTPException(status_code=400, detail="Unknown calculation method")
-    # Prove the config actually works before saving it — otherwise the space
-    # says it's automated forever while every run fails invisibly in logs.
     try:
-        from app.services.automations.prayers import fetch_timings
-
-        fetch_timings(city, country, method)
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Couldn't fetch prayer times for that location — check the "
-                "city and country (or try again in a minute)"
-            ),
-        )
-    return atype, {"city": city, "country": country, "method": method}
+        return atype, module.validate_config(cfg or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.put("/spaces/{space_id}/automation")

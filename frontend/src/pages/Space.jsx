@@ -401,6 +401,12 @@ export default function Space() {
                       value={auto.method}
                       onChange={(e) => setAuto({ ...auto, method: e.target.value })}
                     >
+                      {/* The API accepts methods 0–23; keep an off-list value
+                          visible instead of a blank select that would get
+                          silently replaced on the next save. */}
+                      {!['5', '4', '3', '2', '1', '8', '13', ''].includes(auto.method) && (
+                        <option value={auto.method}>Method {auto.method}</option>
+                      )}
                       <option value="5">Egyptian General Authority</option>
                       <option value="4">Umm Al-Qura (Makkah)</option>
                       <option value="3">Muslim World League</option>
