@@ -90,14 +90,113 @@ commits, tags, and pushes. Flux tracks semver tags → live at
 Change these only when the task genuinely requires it, and keep changes
 minimal and reviewable:
 
-- `deploy/**` layout and manifests (and **never** the `newTag:` values — see
-  above).
-- `.github/workflows/ci.yaml` — the build / staging-deploy / release / preview
-  pipeline.
+- `deploy/**` layout and manifests — hostnames
+  `<app>-staging.nezam.site` / `<app>.nezam.site`, service port **8080**,
+  `/healthz` readiness — and **never** the `newTag:` values (see above).
+  On the platform, the STAGING HTTPRoute is additionally rewritten at
+  deploy time (KEDA scale-to-zero, platform ticket 033): its `rules` list
+  is replaced wholesale to point at the interceptor — custom staging
+  rules/filters in `deploy/base/httproute.yaml` will be overridden there
+  (they still work when the repo is deployed standalone).
+- `.github/workflows/ci.yaml` and `.github/workflows/release.yaml` — the
+  build / staging-deploy / release / preview pipeline.
+- `Dockerfile` — the single image is the deploy unit: it must keep serving
+  HTTP on **8080** (frontend + `/api/*` + `/healthz`) and keep building.
 - `catalog-info.yaml` annotations (`github.com/project-slug`,
-  `backstage.io/techdocs-ref`, `backstage.io/kubernetes-id`) — the portal
-  relies on them.
-- `Dockerfile` — the single image is the deploy unit; keep it building.
+  `backstage.io/techdocs-ref`, `backstage.io/kubernetes-id`,
+  `nezam.space/template-repo`, `nezam.space/template-version`) — the portal
+  and the template upgrade skill rely on them.
+
+### Divergence warning — do this whenever a change touches the files above
+
+These files are the PLATFORM CONTRACT: the platform builds, deploys, routes
+and displays this app through them, and future template upgrades assume they
+still broadly match the template. When the user asks for a change that
+touches any of them:
+
+1. **Warn in plain language**: this file is part of the platform deploy
+   contract; changing it can break staging/prod deploys and will make future
+   template upgrades harder (the upgrade skill has to merge around it).
+2. **Offer a non-contract alternative** when one exists — most features need
+   only `backend/`, `frontend/`, or `docs/`.
+3. If it IS required: keep the change **minimal**, explain it in the PR body,
+   and state the divergence explicitly ("diverges from template <version>:
+   <what and why>").
+4. **Offer an upgrade-compatibility review**: fetch the same file at the
+   template's latest tag
+   (`gh api "repos/nezam-org/template-fastapi-react/contents/<path>?ref=<tag>" --jq .content | base64 -d`)
+   and tell the user whether their change conflicts with where the template
+   is heading.
+
+CI posts a non-blocking comment on any PR touching these paths (the
+`contract-watch` job) — that net exists for direct human edits; you should
+have warned before it fires.
+
+## Template version & upgrades (the upgrade skill)
+
+This app was scaffolded from a versioned platform template. The provenance
+lives in `catalog-info.yaml`:
+
+```yaml
+metadata:
+  annotations:
+    nezam.space/template-repo: nezam-org/template-fastapi-react
+    nezam.space/template-version: v1.1.0   # the tag this app came from
+```
+
+Template releases are git tags (`vX.Y.Z`) on the template repo. If the
+annotations are missing, this app predates stamping: treat it as `v1.0.0`
+and ADD both annotations in your next PR.
+
+### How to upgrade this app to the latest template version
+
+Run this when the user asks for an upgrade (or accepts your offer). Needs the
+`gh` CLI authenticated as the repo owner.
+
+1. **Current vs target.** Current = the `nezam.space/template-version`
+   annotation (missing → `v1.0.0`). Target =
+   `gh api repos/nezam-org/template-fastapi-react/tags --paginate --jq '.[].name' | sort -V | tail -1`
+   (`--paginate`: the endpoint returns 30/page — unpaginated goes silently
+   wrong past 30 releases).
+   Equal → report "already up to date", stop. Upgrades are CUMULATIVE:
+   go current → latest in ONE pass, never one release at a time.
+2. **Fetch the delta.**
+   `gh api "repos/nezam-org/template-fastapi-react/compare/<current>...<target>"`
+   — `.files[]` carries `filename`, `status`, `patch`. If a `patch` is
+   missing/truncated, read the whole file at the target:
+   `gh api "repos/nezam-org/template-fastapi-react/contents/<path>?ref=<target>" --jq .content | base64 -d`.
+3. **Translate template-speak.** The template's raw files use literal
+   double-underscore placeholder tokens (USER, APP, TEMPLATE_VERSION wrapped
+   in `__`) — this file can't spell them out, or scaffolding would substitute
+   them here too. Map them before applying anything: the USER token → this
+   repo's owner, the APP token → this repo's name, the TEMPLATE_VERSION
+   token → the TARGET tag.
+4. **Apply the delta as INTENT, file by file — never as a blind patch.**
+   - File unchanged since scaffold → apply the change directly.
+   - File diverged here → understand what the template change ACHIEVES and
+     re-implement that intent in the current file. NEVER revert or overwrite
+     user code to make a patch apply.
+   - Skip entirely: the `VERSION` file (template-repo metadata — this app
+     doesn't carry it) and any `newTag:` value changes in
+     `deploy/*/kustomization.yaml` (deploy churn; CI owns those values here).
+   - `catalog-info.yaml`: do NOT copy the template's file — set
+     `nezam.space/template-version` to the target tag (add
+     `nezam.space/template-repo` if missing) and merge only genuinely NEW
+     annotations/links the delta introduces.
+   - `AGENTS.md` (this file) is template content too — apply its changes as
+     well; updated instructions take effect next session.
+5. **Open a PR** — branch `template-upgrade/<target>`, never push `main`.
+   Title: `chore: upgrade to template <target>`. Body: a plain-language list
+   of every template change and how you handled it (applied / adapted to a
+   divergence / skipped + why), so the owner can judge it without reading
+   diffs.
+6. **The gate: CI must be green on the PR.** Red → fix INSIDE the PR by
+   adapting your application of the delta; never weaken the app's tests or CI
+   to get to green; never merge red.
+7. **Merge** (squash) once green. If branch protection blocks you, hand the
+   merge to the owner — force nothing.
+8. **Verify**: the annotation now reads `<target>`; staging deploys as usual
+   after the merge.
 
 ## Conventions
 

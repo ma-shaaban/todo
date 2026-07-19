@@ -123,3 +123,24 @@ cd frontend && npm install && npm run dev
 ```
 
 Or the real thing: `docker build -t myapp . && docker run -p 8080:8080 myapp`.
+
+## Template versioning (for template maintainers)
+
+Scaffolded apps record their origin in `catalog-info.yaml`
+(`nezam.space/template-version`), and an AI upgrade skill (see `AGENTS.md`)
+walks diverged apps up the version ladder. That only works with release
+discipline:
+
+- `VERSION` at the repo root holds the current release tag (e.g. `v1.1.0`)
+  and MUST equal the latest `vX.Y.Z` git tag on `main`.
+- Every content change ships as a PR that ALSO bumps `VERSION`; tag the
+  squash-merge commit with that exact version IMMEDIATELY after merging.
+- Semver intent: patch = fixes, minor = additive, major = breaks the platform
+  contract / needs app-side rework.
+- CI's own `deploy: staging → …` writeback commits never bump `VERSION`; the
+  upgrade skill ignores that churn.
+- Full maintainer procedure (edit via `gh api` without cloning, merge, tag):
+  platform repo runbook, "Evolve the app template".
+
+Apps stay fully self-contained (no shared workflows / remote bases) on
+purpose — platform ADR-026: the repo must run standalone anywhere.
