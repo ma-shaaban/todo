@@ -148,6 +148,7 @@ export default function TodoEditor({ spaceId, todo, members, onSaved, onDeleted,
             <select
               value={form.recurrence || ''}
               disabled={!form.due_at}
+              title={form.due_at ? undefined : 'Set a due date to repeat'}
               onChange={(e) => set({ recurrence: e.target.value || null })}
             >
               <option value="">Never</option>
@@ -155,6 +156,7 @@ export default function TodoEditor({ spaceId, todo, members, onSaved, onDeleted,
               <option value="weekly">Weekly</option>
               <option value="monthly">Monthly</option>
             </select>
+            {!form.due_at && <div className="hint">Set a due date to repeat</div>}
           </div>
         </div>
 

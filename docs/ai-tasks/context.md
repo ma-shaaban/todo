@@ -1,5 +1,5 @@
 ---
-focus: ALL DONE — v0.2.0 LIVE IN PRODUCTION (todo.nezam.site). 10 PRs, 107 tests, staging E2E passed (incl. live reminder fire), OOM found+fixed, scaffold evaluation delivered to owner (2026-07-19)
+focus: v0.2.1 — owner-reported UX fix (task 012, Repeat needs a due-date hint) on top of v0.2.0 LIVE IN PRODUCTION (todo.nezam.site). Base: 10 PRs, 107 tests, staging E2E passed (incl. live reminder fire), scaffold evaluation delivered (2026-07-19)
 lastVerified: 2026-07-19
 ---
 
