@@ -2,6 +2,7 @@
 
 import hashlib
 import secrets
+import threading
 import time
 from collections import defaultdict, deque
 
@@ -12,16 +13,25 @@ from fastapi import Request, Response
 SESSION_COOKIE = "session"
 SESSION_DAYS = 30
 
-_hasher = PasswordHasher()  # argon2id defaults
+# OWASP-recommended argon2id profile (19 MiB, t=2, p=1) instead of the
+# library default's 64 MiB per hash: the container runs with a small memory
+# limit, and two concurrent signups at 64 MiB each OOM-killed the pod (seen
+# live on staging). The semaphore bounds worst-case concurrent hashing
+# memory regardless of threadpool width; params ride inside each stored
+# hash, so existing hashes keep verifying.
+_hasher = PasswordHasher(memory_cost=19_456, time_cost=2, parallelism=1)
+_hash_slots = threading.Semaphore(4)
 
 
 def hash_password(password: str) -> str:
-    return _hasher.hash(password)
+    with _hash_slots:
+        return _hasher.hash(password)
 
 
 def verify_password(password_hash: str, password: str) -> bool:
     try:
-        return _hasher.verify(password_hash, password)
+        with _hash_slots:
+            return _hasher.verify(password_hash, password)
     except (VerifyMismatchError, InvalidHashError):
         return False
 
