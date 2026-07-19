@@ -1,5 +1,5 @@
 ---
-focus: 004 todos+reminders backend in review-fix loop; 001–003 DONE and live on staging (main-e22a651)
+focus: 005 notifications+push implemented (85 tests); platform VAPID secret MERGED (nezam PR #5); app PR next
 lastVerified: 2026-07-19
 ---
 

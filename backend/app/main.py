@@ -2,8 +2,10 @@
 React SPA served from ./static at / (API routes are registered first, so they
 take precedence over the SPA catch-all at the bottom)."""
 
+import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,12 +16,33 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.routers import auth as auth_router
+from app.routers import notifications as notifications_router
+from app.routers import push as push_router
 from app.routers import spaces as spaces_router
 from app.routers import todos as todos_router
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="fastapi-react-app")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Reminder poller — one asyncio task in the single replica. Tests (and
+    # any future multi-process setup) opt out via DISABLE_SCHEDULER=1.
+    if os.environ.get("DISABLE_SCHEDULER") == "1":
+        yield
+        return
+    from app.services.scheduler import run_poller
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(run_poller(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        await task
+
+
+app = FastAPI(title="fastapi-react-app", lifespan=_lifespan)
 
 
 @app.middleware("http")
@@ -106,6 +129,8 @@ def healthz():
 app.include_router(auth_router.router)
 app.include_router(spaces_router.router)
 app.include_router(todos_router.router)
+app.include_router(push_router.router)
+app.include_router(notifications_router.router)
 
 
 # SPA serving — registered last so every /api/* + /healthz route above wins.
