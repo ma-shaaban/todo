@@ -36,6 +36,22 @@ doesn't exist on production.
 - **Changes sync by themselves**: when the other person adds or completes
   something, it appears on your screen within ~15 seconds — and instantly
   when you re-open the app. No need to refresh.
+- **Group todos**: choose *Assign to → "Everyone — each checks off"* and
+  every member gets their own box on the same todo. The circle you tap is
+  **yours**; the `n/m` chip shows how many have done theirs, and the todo
+  only moves to Done when the last person checks off.
+
+## Prayer times (automatic todos)
+
+Any space can become a prayer space: open it → **Members** tab →
+**🕌 Prayer times** → set your city, country and calculation method →
+**Turn on** (owner only). From then on the five daily prayers (Fajr,
+Dhuhr, Asr, Maghrib, Isha) appear automatically as group todos — everyone
+checks off their own prayer, with reminders **15 minutes before** and
+**at prayer time**. A missed prayer stays visible (you can still check it
+off late) for a week, then quietly disappears. Times come from
+[AlAdhan](https://aladhan.com) for your chosen city, so they follow the
+seasons on their own.
 
 ## Install it on your phone
 

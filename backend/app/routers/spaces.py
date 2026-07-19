@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from app import models
 from app.db import utcnow
 from app.deps import CurrentUser, DbSession
-from app.schemas import SpaceIn
+from app.schemas import AutomationIn, SpaceIn
 from app.services.activity import record
 
 router = APIRouter(prefix="/api", tags=["spaces"])
@@ -138,6 +138,11 @@ def space_detail(space_id: str, user: CurrentUser, db: DbSession):
         "name": space.name,
         "my_role": membership.role,
         "created_at": space.created_at.isoformat(),
+        "automation": (
+            {"type": space.automation_type, "config": space.automation_config or {}}
+            if space.automation_type
+            else None
+        ),
         "members": [
             {
                 "id": str(u.id),
@@ -165,6 +170,81 @@ def delete_space(space_id: str, user: CurrentUser, db: DbSession):
     sid = parse_uuid(space_id)
     require_owner(get_membership(db, sid, user))
     db.delete(_get_space_or_404(db, sid))  # FKs cascade members/invites/todos
+    return {"ok": True}
+
+
+_MAX_AUTOMATION_STR = 100
+_ALADHAN_METHODS = set(range(0, 24))
+
+
+@router.put("/spaces/{space_id}/automation")
+def set_automation(
+    space_id: str, body: AutomationIn, user: CurrentUser, db: DbSession,
+    background: BackgroundTasks,
+):
+    from app.services.automations import PROVIDERS
+
+    sid = parse_uuid(space_id)
+    require_owner(get_membership(db, sid, user))
+    space = _get_space_or_404(db, sid)
+    if body.type not in PROVIDERS:
+        raise HTTPException(
+            status_code=400, detail=f"Unknown automation: {', '.join(sorted(PROVIDERS))}"
+        )
+    cfg = body.config or {}
+    city = str(cfg.get("city") or "").strip()
+    country = str(cfg.get("country") or "").strip()
+    if not city or not country:
+        raise HTTPException(status_code=400, detail="Please set a city and a country")
+    if len(city) > _MAX_AUTOMATION_STR or len(country) > _MAX_AUTOMATION_STR:
+        raise HTTPException(status_code=400, detail="City/country names are too long")
+    method = cfg.get("method")
+    if method is not None:
+        if not isinstance(method, int) or method not in _ALADHAN_METHODS:
+            raise HTTPException(status_code=400, detail="Unknown calculation method")
+    space.automation_type = body.type
+    space.automation_config = {"city": city, "country": country, "method": method}
+    db.flush()
+    # First run right away (post-commit) so todos appear without waiting
+    # for the next scheduler tick.
+    background.add_task(_run_automation_now, sid)
+    return {"automation": {"type": space.automation_type, "config": space.automation_config}}
+
+
+def _run_automation_now(space_id) -> None:
+    """One immediate provider run in its own session/transaction (we're
+    after the request's commit here). Failures just wait for the tick."""
+    import logging
+
+    from sqlalchemy.orm import Session as OrmSession
+
+    from app.db import get_engine, utcnow
+    from app.services.automations import PROVIDERS
+
+    try:
+        with OrmSession(get_engine()) as db:
+            space = db.get(models.Space, space_id)
+            if space is None or not space.automation_type:
+                return
+            provider = PROVIDERS.get(space.automation_type)
+            if provider is not None:
+                provider(db, space, utcnow())
+                db.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "immediate automation run failed for space %s", space_id
+        )
+
+
+@router.delete("/spaces/{space_id}/automation")
+def clear_automation(space_id: str, user: CurrentUser, db: DbSession):
+    sid = parse_uuid(space_id)
+    require_owner(get_membership(db, sid, user))
+    space = _get_space_or_404(db, sid)
+    # Existing auto-created todos stay — turning the tap off doesn't drain
+    # the sink. The owner can delete them like any other todo.
+    space.automation_type = None
+    space.automation_config = None
     return {"ok": True}
 
 

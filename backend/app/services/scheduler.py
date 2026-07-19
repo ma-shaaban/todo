@@ -99,3 +99,58 @@ async def run_poller(stop: asyncio.Event, interval: float = TICK_SECONDS) -> Non
         except asyncio.TimeoutError:
             pass
     log.info("reminder poller stopped")
+
+
+# ── Space automations ─────────────────────────────────────────────────────
+
+AUTOMATION_TICK_SECONDS = 15 * 60.0
+
+
+def automation_tick_once() -> int:
+    """Run every configured space's automation provider. Each space commits
+    (or rolls back) independently — one broken space or one AlAdhan outage
+    must not starve the rest. Sync — call from a worker thread."""
+    from app import models
+    from app.db import get_engine, utcnow
+    from app.services.automations import PROVIDERS
+
+    ran = 0
+    with OrmSession(get_engine()) as db:
+        space_ids = [
+            row[0]
+            for row in db.query(models.Space.id)
+            .filter(models.Space.automation_type.is_not(None))
+            .all()
+        ]
+    for sid in space_ids:
+        with OrmSession(get_engine()) as db:
+            try:
+                space = db.get(models.Space, sid)
+                if space is None:
+                    continue
+                provider = PROVIDERS.get(space.automation_type)
+                if provider is None:
+                    log.warning("unknown automation %r on space %s", space.automation_type, sid)
+                    continue
+                provider(db, space, utcnow())
+                db.commit()
+                ran += 1
+            except Exception:
+                log.exception("automation failed for space %s", sid)
+    return ran
+
+
+async def run_automations(stop: asyncio.Event, interval: float = AUTOMATION_TICK_SECONDS) -> None:
+    """First tick immediately (todos should exist right after boot/enable),
+    then every `interval`."""
+    log.info("automation runner started (every %ss)", interval)
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(automation_tick_once)
+        except Exception:
+            log.exception("automation tick failed")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
+    log.info("automation runner stopped")

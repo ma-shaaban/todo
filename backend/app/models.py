@@ -30,6 +30,10 @@ class Space(Base):
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid, primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(sa.Text)
     created_by: Mapped[uuid.UUID] = mapped_column(sa.Uuid, sa.ForeignKey("users.id"))
+    # Pluggable per-space automation (services/automations): the provider
+    # named by automation_type runs on the scheduler with automation_config.
+    automation_type: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    automation_config: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=utcnow, server_default=sa.func.now()
     )
@@ -98,6 +102,9 @@ class Todo(Base):
         sa.Uuid, sa.ForeignKey("todos.id", ondelete="SET NULL"), nullable=True
     )
     position: Mapped[float] = mapped_column(sa.Double, default=0.0, server_default="0")
+    # Set by automation providers (unique per space) so their ticks are
+    # idempotent — e.g. 'prayer:2026-07-19:fajr'.
+    automation_key: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     completed_by: Mapped[uuid.UUID | None] = mapped_column(
         sa.Uuid, sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True

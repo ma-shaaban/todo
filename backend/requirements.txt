@@ -7,3 +7,7 @@ psycopg[binary]==3.3.4
 # App additions (pins verified against PyPI 2026-07-19).
 argon2-cffi==25.1.0
 pywebpush==2.3.0
+# Automations: AlAdhan HTTP calls + zoneinfo fallback data (slim images
+# may lack /usr/share/zoneinfo).
+httpx==0.28.1
+tzdata==2025.2

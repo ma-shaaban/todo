@@ -32,10 +32,13 @@ async def _lifespan(app: FastAPI):
     if os.environ.get("DISABLE_SCHEDULER") == "1":
         yield
         return
-    from app.services.scheduler import run_poller
+    from app.services.scheduler import run_automations, run_poller
 
     stop = asyncio.Event()
-    task = asyncio.create_task(run_poller(stop))
+    tasks = [
+        asyncio.create_task(run_poller(stop)),
+        asyncio.create_task(run_automations(stop)),
+    ]
     try:
         yield
     finally:
@@ -43,10 +46,11 @@ async def _lifespan(app: FastAPI):
         try:
             # Bounded: a push send stuck in a worker thread must not wedge
             # pod shutdown until the SIGKILL.
-            await asyncio.wait_for(task, timeout=10)
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
         except (asyncio.TimeoutError, asyncio.CancelledError):
-            task.cancel()
-            logger.warning("reminder poller did not stop in time — cancelled")
+            for task in tasks:
+                task.cancel()
+            logger.warning("scheduler tasks did not stop in time — cancelled")
 
 
 app = FastAPI(title="fastapi-react-app", lifespan=_lifespan)
