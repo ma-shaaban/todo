@@ -13,6 +13,13 @@ metadata:
     # Backstage Kubernetes plugin (027): matches the kubernetes-id annotation on
     # the base Deployment + Service so the portal surfaces pod/replica status.
     backstage.io/kubernetes-id: todo
+    # Template provenance (platform ticket 036): which template + version this
+    # app was scaffolded from. The portal catalog queries these; the AGENTS.md
+    # upgrade skill reads template-version as the app's current level.
+    # Backfilled by the template-upgrade skill: this app predates stamping
+    # (assumed v1.0.0 baseline), upgraded to v1.1.0.
+    nezam.space/template-repo: nezam-org/template-fastapi-react
+    nezam.space/template-version: v1.1.0
   links:
     # "Release to Production" button (ticket 038): opens the release workflow's
     # Run-workflow page — pick a bump, run, prod deploys (see

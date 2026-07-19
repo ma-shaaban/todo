@@ -236,3 +236,45 @@ jobs:
       # NOTE: no writeback step — preview envs are driven entirely by Flux
       # ResourceSet postBuild.substitute (PR_ID + PR_SHA_SHORT injected by the
       # platform's ResourceSetInputProvider); we never touch deploy/staging.
+
+  # Non-blocking heads-up when a PR touches the platform-contract surface
+  # (036; complements the AGENTS.md divergence warning, which only covers
+  # AI-assisted edits — this catches direct human edits). NEVER fails: every
+  # path exits 0. CI's own staging deploy PRs cannot trigger it — they are
+  # created with GITHUB_TOKEN, and GITHUB_TOKEN events don't start workflows
+  # (GitHub anti-recursion).
+  contract-watch:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment if platform-contract files changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          FILES=$(gh api "repos/${REPO}/pulls/${PR}/files" --paginate --jq '.[].filename')
+          TOUCHED=$(printf '%s\n' "$FILES" \
+            | grep -E '^(deploy/|\.github/workflows/(ci|release)\.yaml$|Dockerfile$|catalog-info\.yaml$)' || true)
+          [ -n "$TOUCHED" ] || { echo "no contract paths touched"; exit 0; }
+          MARKER='<!-- nezam-contract-watch -->'
+          if gh api "repos/${REPO}/issues/${PR}/comments" --paginate --jq '.[].body' \
+            | grep -qF "$MARKER"; then
+            echo "already commented"; exit 0
+          fi
+          {
+            echo "$MARKER"
+            echo '**Heads-up: this PR changes platform-contract files.**'
+            echo
+            printf -- '- `%s`\n' $TOUCHED
+            echo
+            echo 'These files are how the platform builds, deploys and routes this'
+            echo 'app (see AGENTS.md → "Handle with care"). Changing them can break'
+            echo 'the staging/prod deploy and makes future template upgrades harder.'
+            echo 'Fine if intentional — nothing is blocked; this is only a heads-up.'
+          } >"$RUNNER_TEMP/comment.md"
+          gh pr comment "$PR" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md" \
+            || echo "could not comment (fork PR token is read-only) — non-blocking"
