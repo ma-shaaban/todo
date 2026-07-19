@@ -6,4 +6,4 @@ images:
   - name: ghcr.io/ma-shaaban/todo
     # CI rewrites newTag to main-<shortsha> on every merge to main (the
     # "[skip ci] deploy: staging → ..." writeback commit). Do not edit by hand.
-    newTag: main-0f31171
+    newTag: main-98d6dff
