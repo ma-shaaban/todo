@@ -46,7 +46,20 @@ def tick_once() -> int:
                 todo = db.get(models.Todo, todo_id)
                 if todo is None or todo.completed_at is not None:
                     continue  # claimed so it never re-fires, but nothing to say
-                if todo.assignee_id:
+                if todo.completion_mode == "each":
+                    # Nag only the people who haven't checked their box yet.
+                    targets = [
+                        row.user_id
+                        for row in db.query(models.TodoAssignee)
+                        .filter(
+                            models.TodoAssignee.todo_id == todo.id,
+                            models.TodoAssignee.completed_at.is_(None),
+                        )
+                        .all()
+                    ]
+                    if not targets:
+                        continue
+                elif todo.assignee_id:
                     targets = [todo.assignee_id]
                 else:
                     targets = [

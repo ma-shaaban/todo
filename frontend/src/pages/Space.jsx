@@ -15,6 +15,8 @@ function activityLine(e) {
       return `${who} added “${t}”`
     case 'todo_completed':
       return `${who} completed “${t}”`
+    case 'todo_checked':
+      return `${who} checked off “${t}”`
     case 'todo_reopened':
       return `${who} reopened “${t}”`
     case 'todo_deleted':
@@ -120,13 +122,25 @@ export default function Space() {
         const reopened = await api(`/api/todos/${todo.id}/reopen`, { method: 'POST' })
         setDone((d) => (d || []).filter((t) => t.id !== todo.id))
         setTodos((t) => [...t, reopened])
+      } else if (
+        todo.completion_mode === 'each' &&
+        todo.assignees?.find((a) => a.id === user.id)?.completed_at
+      ) {
+        // Group todo, my box already checked → uncheck just my box.
+        const updated = await api(`/api/todos/${todo.id}/reopen`, { method: 'POST' })
+        setTodos((t) => t.map((x) => (x.id === todo.id ? updated : x)))
       } else {
         const res = await api(`/api/todos/${todo.id}/complete`, { method: 'POST' })
-        setTodos((t) => {
-          const rest = t.filter((x) => x.id !== todo.id)
-          return res.next ? [...rest, res.next] : rest
-        })
-        if (done !== null) setDone((d) => [res.completed, ...(d || [])])
+        if (res.completed.completed_at) {
+          setTodos((t) => {
+            const rest = t.filter((x) => x.id !== todo.id)
+            return res.next ? [...rest, res.next] : rest
+          })
+          if (done !== null) setDone((d) => [res.completed, ...(d || [])])
+        } else {
+          // Group todo still waiting on others — stays open, my box checked.
+          setTodos((t) => t.map((x) => (x.id === todo.id ? res.completed : x)))
+        }
       }
     } catch (err) {
       setError(err.message)

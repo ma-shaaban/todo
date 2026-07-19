@@ -8,6 +8,7 @@ const EMPTY = {
   due_at: null,
   priority: 0,
   assignee_id: null,
+  everyone: false,
   recurrence: null,
   reminders: [],
 }
@@ -58,7 +59,13 @@ export default function TodoEditor({ spaceId, todo, members, onSaved, onDeleted,
     setBusy(true)
     setError('')
     try {
-      const body = { ...form }
+      const { everyone, ...body } = form
+      if (!todo && everyone) {
+        // "Everyone": a group todo — each member checks off their own box.
+        body.completion_mode = 'each'
+        body.assignee_ids = members.map((m) => m.id)
+        body.assignee_id = null
+      }
       const saved = todo
         ? await api(`/api/todos/${todo.id}`, { method: 'PATCH', body })
         : await api(`/api/spaces/${spaceId}/todos`, { method: 'POST', body })
@@ -131,17 +138,32 @@ export default function TodoEditor({ spaceId, todo, members, onSaved, onDeleted,
         <div className="row">
           <div className="field">
             <label>Assign to</label>
-            <select
-              value={form.assignee_id || ''}
-              onChange={(e) => set({ assignee_id: e.target.value || null })}
-            >
-              <option value="">Nobody</option>
-              {members.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.display_name}
-                </option>
-              ))}
-            </select>
+            {todo && todo.completion_mode === 'each' ? (
+              <div className="hint" style={{ margin: 0 }}>
+                {todo.assignees?.map((a) => (
+                  <div key={a.id}>
+                    {a.completed_at ? '✅' : '⭕'} {a.display_name}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <select
+                value={form.everyone ? '__everyone__' : form.assignee_id || ''}
+                onChange={(e) =>
+                  e.target.value === '__everyone__'
+                    ? set({ everyone: true, assignee_id: null })
+                    : set({ everyone: false, assignee_id: e.target.value || null })
+                }
+              >
+                <option value="">Nobody</option>
+                {!todo && <option value="__everyone__">Everyone — each checks off</option>}
+                {members.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.display_name}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
           <div className="field">
             <label>Repeat</label>

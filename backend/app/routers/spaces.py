@@ -8,6 +8,7 @@ import secrets
 import uuid
 from datetime import timedelta
 
+import sqlalchemy as sa
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sqlalchemy.exc import IntegrityError
 
@@ -189,6 +190,32 @@ def remove_member(space_id: str, member_id: str, user: CurrentUser, db: DbSessio
             removed_name=removed_user.display_name if removed_user else "?",
         )
     db.delete(target)
+    # Their pending 'each' checks leave with them — otherwise group todos
+    # they never checked could never complete. Checked rows stay (history).
+    # Roll-up decisions serialize on the parent todo row locks (same rule
+    # as complete/reopen), taken in id order so concurrent removals can't
+    # deadlock; otherwise this cleanup races a concurrent last-row check
+    # and both sides skip the roll-up.
+    db.execute(
+        sa.select(models.Todo.id)
+        .where(
+            models.Todo.space_id == sid,
+            models.Todo.completion_mode == "each",
+            models.Todo.completed_at.is_(None),
+        )
+        .order_by(models.Todo.id)
+        .with_for_update()
+    ).all()
+    db.query(models.TodoAssignee).filter(
+        models.TodoAssignee.user_id == mid,
+        models.TodoAssignee.completed_at.is_(None),
+        models.TodoAssignee.todo_id.in_(
+            sa.select(models.Todo.id).where(models.Todo.space_id == sid)
+        ),
+    ).delete(synchronize_session=False)
+    from app.routers.todos import roll_up_orphaned_each_todos
+
+    roll_up_orphaned_each_todos(db, sid, utcnow())
     if mid != user.id:
         # A kick must stick: outstanding invite links are bearer tokens the
         # removed member very likely holds (they're listed to every member),

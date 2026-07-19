@@ -32,6 +32,10 @@ class TodoCreate(BaseModel):
     due_at: datetime | None = None
     priority: int = 0
     assignee_id: str | None = None
+    # completion_mode 'each': every user in assignee_ids checks off their
+    # own completion; the todo completes when the last one does.
+    completion_mode: str = "any"
+    assignee_ids: list[str] | None = None
     recurrence: str | None = None
     position: float = 0.0
     reminders: list[datetime] = []
