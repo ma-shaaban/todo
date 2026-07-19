@@ -25,3 +25,24 @@ def test_version(client):
     r = client.get("/api/version")
     assert r.status_code == 200
     assert "version" in r.json()
+
+
+def test_static_resolution_and_traversal_guard(tmp_path, monkeypatch):
+    """Nested static paths (PWA icons, sw.js) resolve; traversal never does."""
+    from pathlib import Path
+
+    from app import main
+
+    static = tmp_path / "static"
+    (static / "icons").mkdir(parents=True)
+    (static / "index.html").write_text("<html>app</html>")
+    (static / "icons" / "icon.png").write_text("png-bytes")
+    (tmp_path / "secret.txt").write_text("nope")
+
+    monkeypatch.setattr(main, "_static", Path(static))
+    hit = main._resolve_static_file("icons/icon.png")
+    assert hit is not None and hit.name == "icon.png"
+    assert main._resolve_static_file("index.html") is not None
+    assert main._resolve_static_file("../secret.txt") is None  # traversal blocked
+    assert main._resolve_static_file("missing.png") is None
+    assert main._resolve_static_file("") is None
