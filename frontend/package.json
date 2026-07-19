@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "react": "19.2.x",
-    "react-dom": "19.2.x"
+    "react-dom": "19.2.x",
+    "react-router": "^8.2.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "6.0.x",
