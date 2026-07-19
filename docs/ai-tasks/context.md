@@ -1,5 +1,5 @@
 ---
-focus: v0.2.2 LIVE IN PRODUCTION — owner-reported fixes 012 (Repeat due-date hint, v0.2.1) + 013 (live refresh, v0.2.2), plus 014 (GitHub dropped two push events; ci.yaml gained a workflow_dispatch escape hatch, used live). Base: v0.2.0 with 10 PRs, 107 tests, E2E passed, scaffold evaluation delivered (2026-07-19)
+focus: PRAYER SPACE ON STAGING awaiting owner test (main-f93bcc9) — group todos (015, PR #35) + prayer automation (016, PR #36) merged, staging E2E green (real AlAdhan fetch, per-person checks, roll-up). Reviews confirmed+fixed 9 bugs incl. a roll-up race and the AlAdhan 302. PROD HELD until owner verifies. v0.2.2 remains in prod.
 lastVerified: 2026-07-19
 ---
 

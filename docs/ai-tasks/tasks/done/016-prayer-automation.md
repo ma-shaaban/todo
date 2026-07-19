@@ -1,6 +1,6 @@
 # 016 — Space automations + Islamic prayer times provider
 
-**Status:** in progress (PR B of the prayer-space project — see
+**Status:** done — merged (#36), staging-verified live (real AlAdhan E2E)
 `../../specs/2026-07-19-group-todos-and-automations-design.md`)
 
 General mechanism: `spaces.automation_type/config` + a provider registry

@@ -1,6 +1,6 @@
 # 015 — Group todos: per-person completion (completion_mode='each')
 
-**Status:** in progress (PR A of the prayer-space project — see
+**Status:** done — merged (#35), staging-verified live
 `../../specs/2026-07-19-group-todos-and-automations-design.md`)
 
 A todo can now require a check from **each** of its assignees
