@@ -83,6 +83,73 @@ def _clean_assignee(db, space_id, assignee_id: str | None):
     return aid
 
 
+def _clean_assignee_ids(db, space_id, assignee_ids: list[str]) -> list[uuid.UUID]:
+    """Validated, deduped assignee set for an 'each' todo — all members."""
+    ids: list[uuid.UUID] = []
+    for raw in assignee_ids:
+        try:
+            aid = uuid.UUID(raw)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Unknown assignee")
+        if aid not in ids:
+            ids.append(aid)
+    if not ids:
+        raise HTTPException(
+            status_code=400, detail="A shared-completion todo needs at least one assignee"
+        )
+    member_ids = {
+        m.user_id
+        for m in db.query(models.SpaceMember)
+        .filter(models.SpaceMember.space_id == space_id, models.SpaceMember.user_id.in_(ids))
+        .all()
+    }
+    if set(ids) - member_ids:
+        raise HTTPException(status_code=400, detail="All assignees must be members of this space")
+    return ids
+
+
+def _no_unchecked_rows(db, todo_id) -> bool:
+    return (
+        db.query(models.TodoAssignee)
+        .filter(
+            models.TodoAssignee.todo_id == todo_id,
+            models.TodoAssignee.completed_at.is_(None),
+        )
+        .count()
+        == 0
+    )
+
+
+def roll_up_orphaned_each_todos(db, space_id, now) -> None:
+    """After assignee rows vanish (member kicked/left): an open 'each' todo
+    with ≥1 checked row and 0 unchecked rows can never complete through the
+    normal path — finish it now. (No recurrence spawn: nobody acted.)
+    Called by the spaces router inside its transaction."""
+    orphans = (
+        db.query(models.Todo.id)
+        .filter(
+            models.Todo.space_id == space_id,
+            models.Todo.completion_mode == "each",
+            models.Todo.completed_at.is_(None),
+            sa.exists().where(
+                models.TodoAssignee.todo_id == models.Todo.id,
+                models.TodoAssignee.completed_at.is_not(None),
+            ),
+            ~sa.exists().where(
+                models.TodoAssignee.todo_id == models.Todo.id,
+                models.TodoAssignee.completed_at.is_(None),
+            ),
+        )
+        .all()
+    )
+    for (tid,) in orphans:
+        db.execute(
+            sa.update(models.Todo)
+            .where(models.Todo.id == tid, models.Todo.completed_at.is_(None))
+            .values(completed_at=now, completed_by=None)
+        )
+
+
 def _clean_reminders(reminders, now):
     if len(reminders) > _MAX_REMINDERS:
         raise HTTPException(status_code=400, detail=f"At most {_MAX_REMINDERS} reminders per todo")
@@ -98,7 +165,7 @@ def _clean_reminders(reminders, now):
 # ── serialization ─────────────────────────────────────────────────────────
 
 
-def _todo_out(todo: models.Todo, users: dict, reminders: list) -> dict:
+def _todo_out(todo: models.Todo, users: dict, reminders: list, assignee_rows: list) -> dict:
     assignee = users.get(todo.assignee_id) if todo.assignee_id else None
     return {
         "id": str(todo.id),
@@ -110,6 +177,15 @@ def _todo_out(todo: models.Todo, users: dict, reminders: list) -> dict:
         "assignee": (
             {"id": str(assignee.id), "display_name": assignee.display_name} if assignee else None
         ),
+        "completion_mode": todo.completion_mode,
+        "assignees": [
+            {
+                "id": str(a.user_id),
+                "display_name": users[a.user_id].display_name if a.user_id in users else "?",
+                "completed_at": a.completed_at.isoformat() if a.completed_at else None,
+            }
+            for a in assignee_rows
+        ],
         "recurrence": todo.recurrence,
         "position": todo.position,
         "completed_at": todo.completed_at.isoformat() if todo.completed_at else None,
@@ -131,13 +207,23 @@ def _serialize_todos(db, todos: list) -> list[dict]:
     """Batch-load assignees + reminders (no N+1) and serialize."""
     if not todos:
         return []
+    todo_ids = [t.id for t in todos]
+    rows_by_todo: dict = {tid: [] for tid in todo_ids}
+    for row in (
+        db.query(models.TodoAssignee)
+        .filter(models.TodoAssignee.todo_id.in_(todo_ids))
+        .all()
+    ):
+        rows_by_todo[row.todo_id].append(row)
     user_ids = {t.assignee_id for t in todos if t.assignee_id}
+    user_ids |= {row.user_id for rows in rows_by_todo.values() for row in rows}
     users = (
         {u.id: u for u in db.query(models.User).filter(models.User.id.in_(user_ids)).all()}
         if user_ids
         else {}
     )
-    todo_ids = [t.id for t in todos]
+    for rows in rows_by_todo.values():
+        rows.sort(key=lambda r: users[r.user_id].display_name.lower() if r.user_id in users else "")
     reminders_by_todo: dict = {tid: [] for tid in todo_ids}
     for rem in (
         db.query(models.Reminder)
@@ -146,7 +232,7 @@ def _serialize_todos(db, todos: list) -> list[dict]:
         .all()
     ):
         reminders_by_todo[rem.todo_id].append(rem)
-    return [_todo_out(t, users, reminders_by_todo[t.id]) for t in todos]
+    return [_todo_out(t, users, reminders_by_todo[t.id], rows_by_todo[t.id]) for t in todos]
 
 
 def _notify_assignment(db, background: BackgroundTasks, todo: models.Todo, actor) -> None:
@@ -221,13 +307,23 @@ def create_todo(
     recurrence = _clean_recurrence(body.recurrence)
     if recurrence and due_at is None:
         raise HTTPException(status_code=400, detail="Repeating todos need a due date")
+    if body.completion_mode not in ("any", "each"):
+        raise HTTPException(status_code=400, detail="completion_mode must be any or each")
+    each_ids = (
+        _clean_assignee_ids(db, sid, body.assignee_ids or [])
+        if body.completion_mode == "each"
+        else []
+    )
     todo = models.Todo(
         space_id=sid,
         title=_clean_title(body.title),
         notes=_clean_notes(body.notes),
         due_at=due_at,
         priority=_clean_priority(body.priority),
-        assignee_id=_clean_assignee(db, sid, body.assignee_id),
+        # 'each' keeps the legacy single-assignee slot empty; the set lives
+        # in todo_assignees.
+        assignee_id=None if each_ids else _clean_assignee(db, sid, body.assignee_id),
+        completion_mode=body.completion_mode,
         recurrence=recurrence,
         recur_anchor_day=due_at.day if (recurrence == "monthly" and due_at) else None,
         position=_clean_position(body.position),
@@ -241,6 +337,8 @@ def create_todo(
         db.rollback()
         # The space was deleted between the membership check and the insert.
         raise HTTPException(status_code=404, detail="Not found")
+    for aid in each_ids:
+        db.add(models.TodoAssignee(todo_id=todo.id, user_id=aid))
     for remind_at in reminders:
         db.add(models.Reminder(todo_id=todo.id, remind_at=remind_at))
     db.flush()
@@ -318,15 +416,48 @@ def delete_todo(todo_id: str, user: CurrentUser, db: DbSession):
 def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: BackgroundTasks):
     todo = _get_todo_for_member(db, todo_id, user)
     now = utcnow()
-    # Atomic claim: only one caller wins, so a double-tap can't double-spawn
-    # the next occurrence of a recurring todo.
-    claimed = db.execute(
-        sa.update(models.Todo)
-        .where(models.Todo.id == todo.id, models.Todo.completed_at.is_(None))
-        .values(completed_at=now, completed_by=user.id)
-        .returning(models.Todo.id)
-    ).first()
-    db.expire(todo)
+
+    if todo.completion_mode == "each":
+        # Check off MY row (atomic — double taps claim nothing the second
+        # time); the parent completes only when the last row is checked.
+        my_row = db.get(models.TodoAssignee, (todo.id, user.id))
+        if my_row is None:
+            raise HTTPException(
+                status_code=400, detail="Only its assignees can check off this todo"
+            )
+        row_claimed = db.execute(
+            sa.update(models.TodoAssignee)
+            .where(
+                models.TodoAssignee.todo_id == todo.id,
+                models.TodoAssignee.user_id == user.id,
+                models.TodoAssignee.completed_at.is_(None),
+            )
+            .values(completed_at=now)
+            .returning(models.TodoAssignee.user_id)
+        ).first()
+        if row_claimed is not None:
+            record(db, todo.space_id, user, "todo_checked", todo=todo, title=todo.title)
+        claimed = (
+            db.execute(
+                sa.update(models.Todo)
+                .where(models.Todo.id == todo.id, models.Todo.completed_at.is_(None))
+                .values(completed_at=now, completed_by=user.id)
+                .returning(models.Todo.id)
+            ).first()
+            if row_claimed is not None and _no_unchecked_rows(db, todo.id)
+            else None
+        )
+        db.expire(todo)
+    else:
+        # Atomic claim: only one caller wins, so a double-tap can't
+        # double-spawn the next occurrence of a recurring todo.
+        claimed = db.execute(
+            sa.update(models.Todo)
+            .where(models.Todo.id == todo.id, models.Todo.completed_at.is_(None))
+            .values(completed_at=now, completed_by=user.id)
+            .returning(models.Todo.id)
+        ).first()
+        db.expire(todo)
 
     next_out = None
     if claimed is not None and todo.recurrence and todo.due_at:
@@ -338,6 +469,7 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: Ba
             due_at=new_due,
             priority=todo.priority,
             assignee_id=todo.assignee_id,
+            completion_mode=todo.completion_mode,
             recurrence=todo.recurrence,
             recur_anchor_day=todo.recur_anchor_day,
             spawned_from=todo.id,
@@ -352,6 +484,11 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: Ba
             # The space was deleted mid-flight; the completion stamp is gone
             # with it, so answer like any other vanished space.
             raise HTTPException(status_code=404, detail="Not found")
+        # 'each' series: the next occurrence starts with everyone unchecked.
+        for row in (
+            db.query(models.TodoAssignee).filter(models.TodoAssignee.todo_id == todo.id).all()
+        ):
+            db.add(models.TodoAssignee(todo_id=nxt.id, user_id=row.user_id))
         # Clone ALL reminders (fired ones included — a fired reminder is
         # exactly the configuration the next occurrence needs) preserving
         # their offset from the due date; drop any landing in the past.
@@ -368,9 +505,15 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: Ba
         record(db, todo.space_id, user, "todo_completed", todo=todo, title=todo.title)
         from app.services.notify import notify_users, send_pushes
 
+        each_ids = [
+            row.user_id
+            for row in db.query(models.TodoAssignee)
+            .filter(models.TodoAssignee.todo_id == todo.id)
+            .all()
+        ]
         prepared = notify_users(
             db,
-            [uid for uid in (todo.created_by, todo.assignee_id) if uid],
+            [uid for uid in (todo.created_by, todo.assignee_id, *each_ids) if uid],
             type="completed",
             title=f"✅ {user.display_name} completed: {todo.title}",
             space_id=todo.space_id,
@@ -386,6 +529,18 @@ def complete_todo(todo_id: str, user: CurrentUser, db: DbSession, background: Ba
 @router.post("/todos/{todo_id}/reopen")
 def reopen_todo(todo_id: str, user: CurrentUser, db: DbSession):
     todo = _get_todo_for_member(db, todo_id, user)
+    if todo.completion_mode == "each":
+        my_row = db.get(models.TodoAssignee, (todo.id, user.id))
+        if my_row is None:
+            raise HTTPException(
+                status_code=400, detail="Only its assignees can uncheck this todo"
+            )
+        my_row.completed_at = None
+        # Fall through: an accidentally-completed parent reopens (and its
+        # recurrence successor is retracted) exactly like an 'any' todo.
+        if todo.completed_at is None:
+            db.flush()
+            return _serialize_todos(db, [todo])[0]
     # Undo the recurrence spawn too: completing accidentally and reopening
     # must not leave a duplicate series. Only a still-open, un-completed
     # successor is retracted — one that was already completed is history.
@@ -427,7 +582,17 @@ def my_todos(user: CurrentUser, db: DbSession):
             models.Todo.completed_at.is_(None),
             sa.or_(
                 models.Todo.assignee_id == user.id,
-                sa.and_(models.Todo.assignee_id.is_(None), models.Todo.created_by == user.id),
+                sa.and_(
+                    models.Todo.assignee_id.is_(None),
+                    models.Todo.completion_mode == "any",
+                    models.Todo.created_by == user.id,
+                ),
+                # 'each' todos where MY check is still pending.
+                sa.exists().where(
+                    models.TodoAssignee.todo_id == models.Todo.id,
+                    models.TodoAssignee.user_id == user.id,
+                    models.TodoAssignee.completed_at.is_(None),
+                ),
             ),
         )
         .order_by(*_OPEN_ORDER)

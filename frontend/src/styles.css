@@ -159,6 +159,9 @@ a.card { display: block; color: inherit; text-decoration: none; }
   cursor: pointer;
 }
 .todo.done .check { border-color: var(--ok); background: var(--ok); color: #fff; }
+/* My box is checked on a group todo that's still waiting on others. */
+.todo .check.self-done { border-color: var(--ok); background: var(--ok); color: #fff; opacity: 0.75; }
+.todo .check:disabled { opacity: 0.35; cursor: default; }
 .todo .body { flex: 1; min-width: 0; cursor: pointer; }
 .todo .title { font-size: 15px; overflow-wrap: anywhere; }
 .todo.done .title { text-decoration: line-through; color: var(--muted); }

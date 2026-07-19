@@ -8,6 +8,7 @@ import secrets
 import uuid
 from datetime import timedelta
 
+import sqlalchemy as sa
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from sqlalchemy.exc import IntegrityError
 
@@ -189,6 +190,18 @@ def remove_member(space_id: str, member_id: str, user: CurrentUser, db: DbSessio
             removed_name=removed_user.display_name if removed_user else "?",
         )
     db.delete(target)
+    # Their pending 'each' checks leave with them — otherwise group todos
+    # they never checked could never complete. Checked rows stay (history).
+    db.query(models.TodoAssignee).filter(
+        models.TodoAssignee.user_id == mid,
+        models.TodoAssignee.completed_at.is_(None),
+        models.TodoAssignee.todo_id.in_(
+            sa.select(models.Todo.id).where(models.Todo.space_id == sid)
+        ),
+    ).delete(synchronize_session=False)
+    from app.routers.todos import roll_up_orphaned_each_todos
+
+    roll_up_orphaned_each_todos(db, sid, utcnow())
     if mid != user.id:
         # A kick must stick: outstanding invite links are bearer tokens the
         # removed member very likely holds (they're listed to every member),

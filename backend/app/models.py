@@ -77,6 +77,10 @@ class Todo(Base):
     space_id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid, sa.ForeignKey("spaces.id", ondelete="CASCADE"), index=True
     )
+    # 'any': anyone completes it (single optional assignee_id) — the
+    # original behavior. 'each': every todo_assignees row must be checked
+    # off by its own user; the todo completes when the last row does.
+    completion_mode: Mapped[str] = mapped_column(sa.Text, default="any", server_default="any")
     title: Mapped[str] = mapped_column(sa.Text)
     notes: Mapped[str] = mapped_column(sa.Text, default="", server_default="")
     due_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
@@ -107,6 +111,20 @@ class Todo(Base):
     updated_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=sa.func.now()
     )
+
+
+class TodoAssignee(Base):
+    """Per-person assignment + completion for completion_mode='each' todos."""
+
+    __tablename__ = "todo_assignees"
+
+    todo_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("todos.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
 
 
 class Reminder(Base):
