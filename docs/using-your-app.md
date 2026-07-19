@@ -27,7 +27,8 @@ doesn't exist on production.
 - Tap the **circle** to complete; tap a todo to edit it.
 - **Repeats**: a daily/weekly/monthly todo re-creates itself for the next
   date when completed (monthly ones keep their day — a bill on the 31st
-  stays month-end even after February).
+  stays month-end even after February). A repeat needs a **due date** —
+  that's what the schedule is anchored to, so set the date first.
 - **Reminders** fire at the times you pick — to the assignee if the todo has
   one, otherwise to everyone in the space.
 - **My Tasks** (bottom bar) gathers everything assigned to you across spaces.
