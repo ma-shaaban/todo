@@ -13,6 +13,19 @@ metadata:
     # Backstage Kubernetes plugin (027): matches the kubernetes-id annotation on
     # the base Deployment + Service so the portal surfaces pod/replica status.
     backstage.io/kubernetes-id: todo
+  links:
+    # "Release to Production" button (ticket 038): opens the release workflow's
+    # Run-workflow page — pick a bump, run, prod deploys (see
+    # .github/workflows/release.yaml).
+    - url: https://github.com/ma-shaaban/todo/actions/workflows/release.yaml
+      title: Release to Production
+      icon: cloud
+    - url: https://todo-staging.nezam.site
+      title: Staging
+      icon: web
+    - url: https://todo.nezam.site
+      title: Production
+      icon: web
 spec:
   type: service
   lifecycle: experimental
