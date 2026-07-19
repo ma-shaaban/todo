@@ -1,5 +1,5 @@
 ---
-focus: v0.2.1 — owner-reported UX fix (task 012, Repeat needs a due-date hint) on top of v0.2.0 LIVE IN PRODUCTION (todo.nezam.site). Base: 10 PRs, 107 tests, staging E2E passed (incl. live reminder fire), scaffold evaluation delivered (2026-07-19)
+focus: owner-reported fixes on top of v0.2.0 — 012 Repeat due-date hint (v0.2.1, in prod) and 013 live refresh (no more manual reload to see the other member's changes). Base: 10 PRs, 107 tests, E2E passed, scaffold evaluation delivered (2026-07-19)
 lastVerified: 2026-07-19
 ---
 

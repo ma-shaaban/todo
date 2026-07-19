@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { api } from '../api.js'
 import { timeAgo } from '../format.js'
+import { useLiveRefresh } from '../live.js'
 
 const ICONS = { reminder: '⏰', assigned: '👉', completed: '✅', joined: '👋' }
 
@@ -14,6 +15,7 @@ export default function Notifications() {
   useEffect(() => {
     load()
   }, [])
+  useLiveRefresh(load)
 
   const open = async (n) => {
     if (!n.read_at) {

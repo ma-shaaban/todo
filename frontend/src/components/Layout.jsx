@@ -1,27 +1,22 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import { api } from '../api.js'
+import { useLiveRefresh } from '../live.js'
 
 export default function Layout() {
   const [unread, setUnread] = useState(0)
 
+  const poll = () =>
+    api('/api/notifications?unread=1&limit=1')
+      .then((d) => setUnread(d.unread_count))
+      .catch(() => {})
+
   useEffect(() => {
-    let timer
-    const poll = () =>
-      api('/api/notifications?unread=1&limit=1')
-        .then((d) => setUnread(d.unread_count))
-        .catch(() => {})
     poll()
-    timer = setInterval(poll, 60000)
-    const onVisible = () => document.visibilityState === 'visible' && poll()
-    document.addEventListener('visibilitychange', onVisible)
     window.addEventListener('notifications:changed', poll)
-    return () => {
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('notifications:changed', poll)
-    }
+    return () => window.removeEventListener('notifications:changed', poll)
   }, [])
+  useLiveRefresh(poll, 30000)
 
   const tab = ({ isActive }) => (isActive ? 'active' : '')
   return (

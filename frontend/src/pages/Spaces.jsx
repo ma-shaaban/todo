@@ -1,20 +1,22 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { api } from '../api.js'
+import { useLiveRefresh } from '../live.js'
 
 export default function Spaces() {
   const [spaces, setSpaces] = useState(null)
   const [name, setName] = useState('')
   const [error, setError] = useState('')
 
-  const load = () =>
+  const load = (silent) =>
     api('/api/spaces')
       .then((d) => setSpaces(d.items))
-      .catch((e) => setError(e.message))
+      .catch((e) => !silent && setError(e.message))
 
   useEffect(() => {
     load()
   }, [])
+  useLiveRefresh(() => load(true))
 
   const create = async (e) => {
     e.preventDefault()
