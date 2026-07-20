@@ -1,5 +1,5 @@
 ---
-focus: v0.3.0 LIVE IN PRODUCTION (todo.nezam.site) — group todos (015), prayer automation (016), space templates UX (017, owner ruling) all shipped + owner-approved release. 128 tests. Reviews caught 13 bugs pre-merge this phase (roll-up race, AlAdhan 302, midnight Isha, provider locking). Next: whatever the owner asks.
+focus: v0.3.1 LIVE IN PRODUCTION (todo.nezam.site) — notification quick-actions (018: Mark-done button on Android pushes + quick panel on tap, replacing the edit-form deep link). Cumulative: 015-018 shipped, 131 tests. Next: whatever the owner asks.
 lastVerified: 2026-07-19
 ---
 
