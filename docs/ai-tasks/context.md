@@ -1,5 +1,5 @@
 ---
-focus: v0.3.1 LIVE IN PRODUCTION (todo.nezam.site) — notification quick-actions (018: Mark-done button on Android pushes + quick panel on tap, replacing the edit-form deep link). Cumulative: 015-018 shipped, 131 tests. Next: whatever the owner asks.
+focus: v0.3.1 in prod. Agent-rules convention adopted (019): AGENTS.md now carries read-on-entry + paired build-ready context files + update discipline; tasks 019+ get context files. Next: whatever the owner asks.
 lastVerified: 2026-07-19
 ---
 

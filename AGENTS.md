@@ -4,6 +4,68 @@ Read this first. This file tells an AI coding agent how **this specific app**
 is built, what it may change freely, and — critically — how deploys work so a
 change doesn't break the platform contract.
 
+## Agent rules — read on entry
+
+Every session starts by reading:
+
+1. This file (`AGENTS.md`)
+2. `docs/ai-tasks/context.md` — current focus / cross-task state
+3. For any task you're about to work on, resume, or whose system you're
+   about to touch: its files under `docs/ai-tasks/tasks/` — **the context
+   file (`<NNN>-context-<name>.md`) first** when it exists.
+
+### `docs/ai-tasks/` is the project's memory
+
+The authoritative source of context — ahead of training data, assumptions,
+and anything you think you remember. Layout:
+
+- `specs/` — approved designs (what/why per feature)
+- `plans/` — implementation plans
+- `tasks/{backlog,todo,in-progress,done}/` — one task = **paired files**:
+  - `<NNN>-<kebab-name>.md` — summary: what / why / result
+  - `<NNN>-context-<kebab-name>.md` — **build-ready context**: concrete
+    file paths, code snippets, exact commands, API/schema shapes, traps to
+    avoid, acceptance checks, and an append-only decision log. Test: could
+    a fresh session build the task from this file alone? If not, it's
+    incomplete.
+- `context.md` — focus ledger (`focus:` + `lastVerified:` frontmatter),
+  updated at every milestone
+
+Tasks 001–018 predate the paired convention (summary-only history); every
+task from 019 on carries a context file from the `todo/` transition onward.
+
+Before acting: working on or resuming a task → read its context file
+first. Touching an existing system → read the `done/` task that built it
+instead of reverse-engineering. Making a decision that overlaps prior work
+→ check the decision log so you don't relitigate a settled call. Context
+that's missing is a gap to **fill** in the files, not to guess around.
+
+### Task lifecycle
+
+Status is the folder — `git mv` is the only state transition (never a
+`status:` frontmatter field):
+
+1. **backlog/** — captured ideas; summary file only is fine
+2. **todo/** — committed to; summary + build-ready context both exist
+   (context is written on this transition)
+3. **in-progress/** — actively worked; keep the plan + decision log current
+4. **done/** — fill the summary's Result section, `git mv` both files
+
+Blocked → stays in `in-progress/` with the blocker noted in the context
+file. Demoting is fine; keep the context file.
+
+### Update discipline (load-bearing)
+
+- **After every change, audit for staleness — proactively.** The doc set:
+  this file, `README.md`, `docs/`, `docs/ai-tasks/`. If your change makes
+  any of them inaccurate, fix them in the same commit. Stale docs are
+  worse than missing docs.
+- Non-obvious decisions go in the task's decision log — append-only;
+  supersede, never edit past entries.
+- Update `lastVerified:` when re-confirming a context file against
+  current reality.
+- Style for these files: terse, headers and lists, no emoji unless asked.
+
 ## What this is
 
 A **FastAPI + React** app scaffolded on the **Nezam platform**. The React
@@ -43,35 +105,48 @@ scripts/
   release.sh            cut a prod release (X.Y.Z)
 ```
 
-## Current API routes (`backend/app/main.py`)
+## Current API surface
 
-- `GET /api/hello` — static JSON greeting.
-- `GET /api/db-check` — round-trips `SELECT now()` against Postgres; returns
-  503 if the DB is unreachable (never leaks raw error text to the client).
-- `GET /api/version` — reports `APP_VERSION` (baked into the image at build).
-- `GET /healthz` — readiness; deliberately DB-free.
+Feature routers live in `backend/app/routers/` (auth, spaces, todos, push,
+notifications, activity), registered in `app/main.py` **above** the SPA
+catch-all. Business logic lives in `backend/app/services/` (notify,
+scheduler, recurrence, vapid, `automations/` — pluggable per-space
+automation providers with space-template metadata). Schema = alembic
+migrations `0001`–`0008` (app_meta, auth, spaces/invites, todos/reminders,
+push/notifications, activity, group todos, automations).
+
+Template basics still present in `app/main.py`:
+
+- `GET /api/hello`, `GET /api/db-check` (503 when DB unreachable),
+  `GET /api/version` (build-baked `APP_VERSION`), `GET /healthz` (DB-free).
 - `GET /{full_path:path}` — SPA catch-all, registered **last** so every
   `/api/*` and `/healthz` route wins. Keep new API routes above it.
 
 ## How deploys work — GET THIS RIGHT
 
-`main` is **protected**: it requires **1 approval**, and CI never
-direct-pushes to it. The flow:
+Current mode (ADR-028 — deploy gate SUSPENDED; `main` is unprotected and
+CI self-merges its own deploy PR):
 
-1. You land a change on `main` **via a Pull Request** (approved + merged).
-2. CI builds the image `ghcr.io/ma-shaaban/todo:main-<shortsha>` and **opens
-   a second "staging deploy" PR** that bumps the image tag in
-   `deploy/staging/kustomization.yaml`.
-3. A **human approves** that staging-deploy PR.
-4. Auto-merge (squash, with `[skip ci]` in the commit subject so it doesn't
-   loop) lands it on `main`.
-5. **Flux** applies it → the change goes live at
-   **`https://todo-staging.nezam.site`** (~1 minute later).
+1. Land changes on `main` **via a Pull Request** with CI green.
+2. CI builds `ghcr.io/ma-shaaban/todo:main-<shortsha>`, opens a staging
+   deploy PR bumping `deploy/staging/kustomization.yaml`, and **merges it
+   itself immediately** (squash, `[skip ci]` subject) — no human approval
+   in the loop right now.
+3. **Flux** applies it → live at **`https://todo-staging.nezam.site`**
+   (~3–4 min after your merge).
+4. **Verify every merge yourself**: poll `/api/version` until it equals
+   `main-<your short sha>`. Don't declare success before it does. If no
+   `ci` push run exists for your merge sha (GitHub occasionally drops push
+   events — observed live 2026-07-19), retrigger with
+   `gh workflow run ci.yaml --ref main`.
 
-**Production** ships only by pushing a **semver git tag** (`vX.Y.Z`) — use
-`./scripts/release.sh X.Y.Z`, which pins `deploy/prod/kustomization.yaml`,
-commits, tags, and pushes. Flux tracks semver tags → live at
-**`https://todo.nezam.site`**.
+**Production** ships only by a **semver git tag** (`vX.Y.Z`). Preferred:
+the *Release to Production* workflow —
+`gh workflow run release.yaml -f bump=patch|minor|major` (rebases, pins
+`deploy/prod/kustomization.yaml`, tags, pushes). Manual fallback:
+`./scripts/release.sh X.Y.Z`. Flux tracks semver tags → live at
+**`https://todo.nezam.site`**. Release only with the owner's explicit
+go-ahead, after they've verified staging.
 
 > **NEVER hand-edit the `newTag:` image tags in `deploy/staging/` or
 > `deploy/prod/`.** CI owns the staging tag; `scripts/release.sh` owns the
@@ -200,9 +275,10 @@ Run this when the user asks for an upgrade (or accepts your offer). Needs the
 
 ## Conventions
 
-- **FastAPI routes** go in `backend/app/main.py` (or new modules imported into
-  it), and must be registered **above** the SPA catch-all at the bottom of the
-  file. Keep `/api/*` prefixes for JSON endpoints.
+- **FastAPI routes** go in `APIRouter` modules under `backend/app/routers/`,
+  included from `app/main.py` **above** the SPA catch-all. Business logic
+  the routes call goes in `backend/app/services/`. Keep `/api/*` prefixes
+  for JSON endpoints.
 - **DB schema changes** are alembic migrations:
   `cd backend && alembic revision -m "add my_table"` — a new file lands in
   `backend/alembic/versions/` next to `0001_create_app_meta.py`. Migrations
@@ -244,10 +320,26 @@ Or build the real image the way the platform does:
 docker build -t todo . && docker run -p 8080:8080 todo
 ```
 
-**Tests:** none exist yet. When you add them, prefer `pytest` for the backend
-(add `pytest` to `backend/requirements.txt`, tests under `backend/tests/`) and
-Vitest for the frontend, and wire them into `.github/workflows/ci.yaml` if you
-want CI to run them.
+**Tests:** 115 backend (pytest, `backend/tests/`, real Postgres) + 16
+frontend (Vitest). CI runs both on every PR (`test` job with a Postgres
+service container) and the image build gates on them. Test deps live in
+`backend/requirements-dev.txt` — NOT in `requirements.txt` (they must not
+ship in the runtime image). Local loop:
+
+```sh
+# One-time: local test Postgres on :5433 (conftest defaults point at it)
+docker run -d --name todo-test-pg -p 5433:5432 -e POSTGRES_USER=todo \
+  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=todo_test postgres:16-alpine
+
+# One-time: venv (host python may lack venv — uv handles it)
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python \
+  -r backend/requirements.txt -r backend/requirements-dev.txt
+
+# Every change
+cd backend && ../.venv/bin/python -m pytest -q
+cd frontend && npm run test -- --run && npm run build
+```
 
 ## Developing with AI (the loop, for you the agent)
 
@@ -258,11 +350,12 @@ The owner may not be a developer. Work like this:
    `frontend/`, or `docs/`.
 3. Open a **Pull Request** (never push to `main` directly). Explain the change
    in plain language in the PR body so the owner can approve confidently.
-4. After merge, CI opens the **staging-deploy PR** — tell the owner to
-   **approve** it; the change then goes live on
-   `https://todo-staging.nezam.site`.
-5. When they're happy on staging, cut a release with
-   `./scripts/release.sh X.Y.Z` to ship to `https://todo.nezam.site`.
+4. After merge, staging deploys **automatically** (ADR-028 — gate
+   suspended); verify `/api/version` == `main-<sha>` on
+   `https://todo-staging.nezam.site`, then tell the owner it's ready to try.
+5. When they're happy on staging and say so, release with
+   `gh workflow run release.yaml -f bump=patch|minor|major` to ship to
+   `https://todo.nezam.site`.
 
 Keep the owner in control: **nothing reaches production without their
 approval**, and you never edit deploy image tags by hand.
