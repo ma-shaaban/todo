@@ -70,6 +70,13 @@ home screen — that's an Apple rule.*
 Then, in the app: **Settings → Turn on notifications** and allow when asked.
 That device now gets reminders even when the app is closed.
 
+**Acting on a reminder:** on Android (and desktop Chrome) the notification
+has a **✓ Mark done** button — tap it and you're done without opening the
+app. Tapping the notification itself opens a quick panel with a big
+**Mark done** button (or **Check off my box** on shared todos), plus *Edit
+details* if you need it. iPhones don't show buttons on web notifications
+(an Apple limitation) — there, tap through to the quick panel.
+
 ## Removing people, leaving, deleting
 
 - Any member can invite; only the **owner** can rename/delete the space or
