@@ -4,7 +4,7 @@ import { api } from '../api.js'
 import { useAuth } from '../auth.jsx'
 import TodoEditor from '../components/TodoEditor.jsx'
 import TodoItem from '../components/TodoItem.jsx'
-import { timeAgo } from '../format.js'
+import { dueLabel, timeAgo } from '../format.js'
 import { useLiveRefresh } from '../live.js'
 
 function activityLine(e) {
@@ -48,6 +48,7 @@ export default function Space() {
   const [activity, setActivity] = useState(null)
   const [quick, setQuick] = useState('')
   const [editing, setEditing] = useState(undefined) // undefined=closed, null=new, todo=edit
+  const [quickTodo, setQuickTodo] = useState(null) // notification deep-link panel
   const [invite, setInvite] = useState(null)
   const [auto, setAuto] = useState({ city: '', country: '', method: '' })
   const [autoBusy, setAutoBusy] = useState(false)
@@ -98,13 +99,14 @@ export default function Space() {
   }, [id, tab, showingDone])
   useLiveRefresh(refresh)
 
-  // Deep link ?todo=<id> (from notifications) opens the editor.
+  // Deep link ?todo=<id> (from notifications): a quick-action panel —
+  // people arriving from a reminder want "mark done", not the edit form.
   useEffect(() => {
     const target = params.get('todo')
     if (target && todos.length) {
       const t = todos.find((x) => x.id === target)
       if (t) {
-        setEditing(t)
+        setQuickTodo(t)
         setParams({}, { replace: true })
       }
     }
@@ -464,6 +466,61 @@ export default function Space() {
             </div>
           ))
         ))}
+
+      {quickTodo &&
+        (() => {
+          const isEach = quickTodo.completion_mode === 'each'
+          const myRow = isEach ? quickTodo.assignees?.find((a) => a.id === user.id) : null
+          const canAct = !isEach || Boolean(myRow)
+          return (
+            <div
+              className="sheet-backdrop"
+              onClick={(e) => e.target === e.currentTarget && setQuickTodo(null)}
+            >
+              <div className="sheet">
+                <h2>{quickTodo.title}</h2>
+                {quickTodo.due_at && <p className="hint">Due {dueLabel(quickTodo.due_at)}</p>}
+                {quickTodo.notes && <p className="hint">{quickTodo.notes}</p>}
+                {isEach && (
+                  <p className="hint">
+                    {quickTodo.assignees
+                      ?.map((a) => `${a.completed_at ? '✅' : '⭕'} ${a.display_name}`)
+                      .join('   ')}
+                  </p>
+                )}
+                <div className="actions">
+                  <button className="btn secondary" onClick={() => setQuickTodo(null)}>
+                    Close
+                  </button>
+                  <button
+                    className="btn secondary"
+                    onClick={() => {
+                      setEditing(quickTodo)
+                      setQuickTodo(null)
+                    }}
+                  >
+                    Edit details
+                  </button>
+                  {canAct && (
+                    <button
+                      className="btn"
+                      onClick={async () => {
+                        await toggle(quickTodo)
+                        setQuickTodo(null)
+                      }}
+                    >
+                      {isEach
+                        ? myRow?.completed_at
+                          ? 'Uncheck my box'
+                          : '✓ Check off my box'
+                        : '✓ Mark done'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })()}
 
       {editing !== undefined && (
         <TodoEditor

@@ -51,6 +51,13 @@ def test_due_reminder_fires_exactly_once(client, captured_pushes):
     assert len(reminders) == 1
     assert "Meds" in reminders[0]["title"]
     assert any("Meds" in p["data"] for p in captured_pushes)
+    # The push payload carries what the service worker needs for the
+    # "Mark done" notification action.
+    import json as _json
+
+    payload = _json.loads(captured_pushes[0]["data"])
+    assert payload["type"] == "reminder"
+    assert payload["todo_id"]
 
 
 def test_assigned_reminder_targets_assignee_only(client, make_client):

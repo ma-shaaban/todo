@@ -40,7 +40,16 @@ def notify_users(db, user_ids, *, type: str, title: str, body: str = "", url: st
         )
     db.flush()
     payload = json.dumps(
-        {"title": title, "body": body, "url": url, "tag": f"{type}-{todo_id or space_id}"}
+        {
+            "title": title,
+            "body": body,
+            "url": url,
+            "tag": f"{type}-{todo_id or space_id}",
+            # The service worker uses these to offer a "Mark done" action
+            # button on actionable pushes (reminder/assigned).
+            "type": type,
+            "todo_id": str(todo_id) if todo_id else None,
+        }
     )
     ttl = _TTL_REMINDER if type == "reminder" else _TTL_SOCIAL
     subs = (
