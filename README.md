@@ -1,146 +1,77 @@
-# template-fastapi-react
+# todo
 
-Batteries-included app template for the nezam platform: React (Vite) frontend
-+ FastAPI backend, shipped as **one image**, deployed by Flux to
-`https://<app>-staging.nezam.site` and `https://<app>.nezam.site`.
+**todo** is a shared to-do app — spaces you invite people into, group todos,
+reminders, and web-push notifications — running on the Nezam platform. This
+page is for you, the owner: you don't need to be a developer to change it and
+ship it.
 
-## Start here
+## Your app's two addresses
 
-1. Click **"Use this template"** on GitHub (or plain clone-and-copy — nothing
-   here is GitHub-specific except the CI workflow).
-2. From your new repo's root:
+| | URL | What it's for |
+|---|---|---|
+| **Staging** | <https://todo-staging.nezam.site> | Every change lands here first, automatically. Look at it, click around, break things safely. |
+| **Production** | <https://todo.nezam.site> | The released version your real users see. Updates only when you say "release". |
 
-   ```sh
-   ./scripts/init.sh <your-github-user> <app-name>   # lowercase alnum/dash
-   git push
-   ```
+Staging and production keep **separate accounts and data** — an account made
+on staging doesn't exist on production.
 
-3. Ask the platform to register the app (namespaces, Flux sync, DB role — see
-   the platform runbook *"Register a tenant app"*).
-4. After CI's first push, make the `ghcr.io/<user>/<app>` package **public**
-   (GitHub → your profile → Packages → package settings → Change visibility).
-   One-time step.
+## How you build this app: describe, review, release
 
-## How your app ships
+You work with an AI coding assistant (Claude Code or similar). Open this
+repository in it and describe what you want, in plain English:
 
-### Staging: merge to main (~1 minute)
+> "Add a weekly view that groups todos by the day they're due."
 
-Every push to `main`:
+The AI reads this repo's house rules (`AGENTS.md` — what it may change, what
+it must not break, how deploys work) and does the rest:
 
-1. CI builds the image and pushes `ghcr.io/<user>/<app>:main-<shortsha>`.
-2. CI commits that tag into `deploy/staging/kustomization.yaml`
-   (`[skip ci] deploy: staging → main-<shortsha>`).
-3. Flux (watching `main`) applies it — staging serves your build about a
-   minute after CI finishes.
+1. **It proposes the change as a Pull Request.** Nothing is live yet, and
+   automatic tests run against it. You don't have to read code — ask it to
+   explain the change in plain English, then accept (merge) it.
+2. **Staging updates automatically.** A few minutes after the merge, the
+   change is live on staging. The AI verifies the deploy actually landed and
+   tells you when it's ready to try.
+3. **You decide when to release.** When staging looks good, say "release
+   it" — or use the **Release to Production** button (in the platform
+   portal, or GitHub → Actions → release → Run workflow). Production
+   updates a few minutes later.
 
-Every staging deploy is a git commit: the history of
-`deploy/staging/kustomization.yaml` **is** your deploy log, and rollback is
-`git revert`.
+Nothing reaches your users without your go-ahead.
 
-### Prod: cut a release
+## Where to look things up
 
-```sh
-./scripts/release.sh 1.2.3
-```
+- **`docs/`** — plain-language pages about your app (also rendered on the
+  portal's *Docs* tab): what it is, how it works, [using your
+  app](docs/using-your-app.md) (spaces, reminders, prayer-space template,
+  installing it on your phone), [developing with AI](docs/developing-with-ai.md).
+- **`docs/ai-tasks/`** — the AI's task board for this app: what's planned
+  (`tasks/todo/`), in progress, and done (`tasks/done/`). Browse it any time
+  to see where work stands — each task has a short summary written for you.
+- **`AGENTS.md`** — the house rules the AI follows. You rarely need to read
+  it, but everything the AI is and isn't allowed to do is written there.
 
-This pins `deploy/prod` to `1.2.3`, commits, tags `v1.2.3`, and pushes. Flux
-tracks semver tags (highest wins), so the tag push is the prod deploy;
-rollback = tag a higher version from an older commit.
+## Your database, backups, and limits — handled
 
-> **Expected blip:** Flux may apply the tagged commit ~1 minute before CI
-> finishes pushing the image. Prod briefly shows `ImagePullBackOff`, then
-> self-heals — no action needed.
+The platform provides a Postgres database per environment (staging and
+production fully separate), injects the credentials automatically, and applies
+schema changes on deploy. Your app has a resource budget suited to a small
+production app; the AI knows the numbers and can raise them within your quota
+if a feature needs more muscle.
 
-## Database
+## For developers
 
-The platform provides a Postgres database per environment and injects
-credentials via the `app-db` Secret, surfaced to your code as env vars:
-`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
+The short version (the full contract is in `AGENTS.md`):
 
-Migrations are alembic, run automatically on every container start
-(`alembic upgrade head` in `backend/entrypoint.sh` — idempotent; retries,
-then starts the server anyway with a loud log warning so a brief DB outage
-never turns into a crashloop). Add schema:
-
-```sh
-cd backend && alembic revision -m "add my_table"
-```
-
-## Preview environments
-
-Label a same-repo PR `preview` to spin up an ephemeral environment at
-`https://<app>-pr-<n>.nezam.site` within ~10 minutes (Flux default poll).
-
-**How it works:**
-
-1. Labeling the PR triggers CI to build `ghcr.io/<user>/<app>:pr-<n>-<sha>`.
-2. The platform's Flux ResourceSetInputProvider detects the label and stamps
-   a namespace + Kustomization pointing at `deploy/preview` with Flux
-   `postBuild.substitute` vars `PR_ID=<n>` and `PR_SHA_SHORT=<sha>`.
-3. Every push to the PR branch (with the label active) rebuilds the image and
-   Flux rolls it forward automatically.
-4. Removing the label, merging, or closing the PR triggers Flux staged GC —
-   the namespace and all resources are removed cleanly.
-5. A stale-reaper CronJob removes the `preview` label from PRs with no new
-   commits in 72 hours; the env is garbage-collected within one poll cycle.
-
-**Constraints:**
-
-- Maximum **2 concurrent** preview environments per app (platform cap).
-- **Fork PRs are not supported.** GitHub grants fork-PR workflows a read-only
-  `GITHUB_TOKEN`; pushing the preview image to GHCR requires write access.
-  Only same-repo branch PRs (teammates with write access to the repo) can use
-  previews.
-- The preview overlay deploys 1 replica with no autoscaling. It uses the same
-  DB secret injection as staging — the platform stamps an isolated per-PR
-  Postgres database (CNPG `Database` CR) so preview data is never commingled
-  with staging or prod.
-
-## What's where
-
-| Path | What |
-|---|---|
-| `frontend/` | Vite + React SPA (one demo page hitting the API) |
-| `backend/` | FastAPI: `/api/hello`, `/api/db-check`, `/api/version`, `/healthz`; serves the built SPA at `/` |
-| `deploy/` | kustomize base + staging/prod/preview overlays (Deployment, Service, HTTPRoute) |
-| `Dockerfile` | multi-stage: node build → python:3.12-slim runtime |
-| `.github/workflows/ci.yaml` | build+push image; staging writeback on main; release build on `v*` tags; preview build on labeled PRs |
-| `scripts/release.sh` | cut a prod release |
-| `scripts/init.sh` | one-time placeholder substitution |
-| `catalog-info.yaml` | Backstage/portal catalog stub |
-
-The app version shown at `/api/version` is baked into the image at build time
-(`--build-arg VERSION=...` → `APP_VERSION`); local builds report `dev`.
-
-## Local development
-
-```sh
-# backend (terminal 1) — /api/db-check 503s without a local postgres; fine
-cd backend && pip install -r requirements.txt && uvicorn app.main:app --port 8080
-
-# frontend (terminal 2) — dev server proxies /api → :8080
-cd frontend && npm install && npm run dev
-```
-
-Or the real thing: `docker build -t myapp . && docker run -p 8080:8080 myapp`.
-
-## Template versioning (for template maintainers)
-
-Scaffolded apps record their origin in `catalog-info.yaml`
-(`nezam.space/template-version`), and an AI upgrade skill (see `AGENTS.md`)
-walks diverged apps up the version ladder. That only works with release
-discipline:
-
-- `VERSION` at the repo root holds the current release tag (e.g. `v1.1.0`)
-  and MUST equal the latest `vX.Y.Z` git tag on `main`.
-- Every content change ships as a PR that ALSO bumps `VERSION`; tag the
-  squash-merge commit with that exact version IMMEDIATELY after merging.
-- Semver intent: patch = fixes, minor = additive, major = breaks the platform
-  contract / needs app-side rework.
-- CI's own `deploy: staging → …` writeback commits never bump `VERSION`; the
-  upgrade skill ignores that churn.
-- Full maintainer procedure (edit via `gh api` without cloning, merge, tag):
-  platform repo runbook, "Evolve the app template".
-
-Apps stay fully self-contained (no shared workflows / remote bases) on
-purpose — platform ADR-026: the repo must run standalone anywhere.
+- **Stack:** React (Vite) frontend + FastAPI backend + Postgres, shipped as
+  one Docker image; FastAPI serves `/api/*` and the built SPA. Feature
+  routers in `backend/app/routers/`, business logic in `backend/app/services/`.
+- **Tests:** backend pytest against a real Postgres + Vitest on the frontend;
+  CI runs both and gates every image build on them.
+- **Local dev:** `cd backend && uvicorn app.main:app --port 8080` and
+  `cd frontend && npm run dev` (the dev server proxies `/api`).
+- **Deploys:** merge to `main` → CI builds + writes the image tag back →
+  Flux deploys staging; semver tag (via the release workflow) → production.
+  Every deploy is a git commit — the history of `deploy/` is your deploy log.
+- **Previews:** label a PR `preview` for an ephemeral environment at
+  `https://todo-pr-<n>.nezam.site` (careful: previews share the staging
+  database — see `AGENTS.md`).

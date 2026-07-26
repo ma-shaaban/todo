@@ -21,6 +21,14 @@ on:
   # build + staging writeback. `gh workflow run ci.yaml --ref main`
   workflow_dispatch:
 
+# Serialize runs per ref: two quick merges to main queue instead of racing
+# each other's staging writeback (a lost `gh pr merge` race once left a stale
+# deploy PR open all day — a rollback landmine). PR runs group per-PR and
+# cancel superseded builds.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: write # push the deploy PR branch (deploy/staging-<version>)
   pull-requests: write # open the staging deploy-tag writeback PR onto main
@@ -36,7 +44,8 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        # Major matches the platform's shared CNPG cluster (PostgreSQL 18).
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: todo
           POSTGRES_PASSWORD: test
@@ -96,6 +105,10 @@ jobs:
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >>"$GITHUB_OUTPUT"
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             echo "version=${GITHUB_REF_NAME#v}" >>"$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            # PR builds are validation-only (never pushed — see below); the
+            # tag says so instead of masquerading as a main build.
+            echo "version=pr-${{ github.event.pull_request.number }}-ci-${GITHUB_SHA::7}" >>"$GITHUB_OUTPUT"
           else
             echo "version=main-${GITHUB_SHA::7}" >>"$GITHUB_OUTPUT"
           fi
@@ -103,6 +116,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -111,7 +125,10 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          # PRs build the image (Dockerfile stays validated) but never push —
+          # pushing would publish tags that look like deployable builds from
+          # commits that were never on main.
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.ref.outputs.image }}:${{ steps.ref.outputs.version }}
           # Single source of truth for the running version — baked into the
           # image (Dockerfile ARG VERSION → ENV APP_VERSION → /api/version).
@@ -130,6 +147,27 @@ jobs:
       # `[skip ci]` message, so the resulting push to main is ignored by this
       # workflow (paths-ignore on deploy/staging/kustomization.yaml is a second
       # guard, since the PR only touches that file).
+      # Any open deploy/staging-* PR is by definition superseded the moment a
+      # newer build exists — and if left open it becomes a rollback landmine
+      # (merging it later would pin staging to an OLD image; one sat open all
+      # day during the scaffold-eval). Sweep before opening the new one.
+      - name: Close superseded staging deploy PRs
+        if: >
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          for pr in $(gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+              --json number,headRefName \
+              --jq '.[] | select(.headRefName | startswith("deploy/staging-")) | .number'); do
+            echo "closing stale deploy PR #$pr (superseded by this run)"
+            gh pr close "$pr" --repo "$GITHUB_REPOSITORY" --delete-branch \
+              --comment "Superseded by a newer staging deploy run — closed so it can never roll staging back." \
+              || echo "could not close #$pr — continuing"
+          done
+
       - name: Update staging image tag
         # Only on push to main or a manual dispatch on main (not
         # pull_request events, not tags — tag refs never match).
@@ -184,8 +222,17 @@ jobs:
           PR_NUMBER: ${{ steps.deploy_pr.outputs.pull-request-number }}
           VERSION: ${{ steps.ref.outputs.version }}
         run: |
-          gh pr merge "$PR_NUMBER" --squash \
-            --subject "deploy: staging → ${VERSION} [skip ci]"
+          # If the merge fails (transient API error, unexpected race), CLOSE
+          # the PR rather than leave it open: an unmerged deploy PR that
+          # outlives its run is a stale rollback landmine. Recovery is one
+          # command: gh workflow run ci.yaml --ref main
+          if ! gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash \
+              --subject "deploy: staging → ${VERSION} [skip ci]"; then
+            echo "merge failed — closing PR #$PR_NUMBER so it can't roll staging back later"
+            gh pr close "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --delete-branch \
+              --comment "Self-merge failed; closed to avoid a stale deploy PR. Retrigger: gh workflow run ci.yaml --ref main" || true
+            exit 1
+          fi
 
   # Preview-environment image build — triggered on labeled PRs only.
   # IMPORTANT: this job runs ONLY for same-repo (head-branch) PRs; fork PRs
@@ -196,6 +243,8 @@ jobs:
     # Run only when the PR carries the `preview` label. This prevents accidental
     # image builds on every PR and keeps preview slots within the platform cap (2
     # concurrent) without requiring separate workflow files.
+    # Tests gate previews too — broken code shouldn't ship to a preview URL.
+    needs: [test]
     if: >
       github.event_name == 'pull_request' &&
       contains(github.event.pull_request.labels.*.name, 'preview')

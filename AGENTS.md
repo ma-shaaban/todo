@@ -153,12 +153,44 @@ go-ahead, after they've verified staging.
 > prod tag. Editing them by hand fights the automation and breaks the deploy
 > log (every deploy is supposed to be a CI/release commit).
 
+### Deploy sharp edges (all observed live — recovery is one command)
+
+- **GitHub sometimes drops push events.** If `/api/version` hasn't reached
+  `main-<your sha>` in ~5 min, check `gh run list --branch main` — if no `ci`
+  run exists for your merge sha, the push event was lost. Retrigger:
+  `gh workflow run ci.yaml --ref main`.
+- **Wait for checks to EXIST, not just not-fail.** During GitHub Actions
+  lag, `gh pr checks --watch` can return "no checks reported" and let a
+  merge sail through unchecked. Before merging, confirm the checks are
+  actually listed (and green).
+- **Never merge an old `deploy/staging-*` PR.** CI closes superseded deploy
+  PRs automatically, but if you ever find one open that's older than the
+  newest build, close it — merging it would roll staging BACK.
+
 ## What you may change freely
 
 - `backend/` — API routes, business logic, new alembic migrations.
 - `frontend/` — components, pages, styling.
-- Tests (add them under the conventions below — none exist yet).
-- `docs/` — the TechDocs pages (keep them plain-language for the owner).
+- Tests — extend `backend/tests/` and `frontend/src/__tests__/` (see
+  Conventions; the existing suites must stay green).
+- `docs/` — the TechDocs pages (keep them plain-language for the owner) and
+  `docs/ai-tasks/` (your working memory).
+
+## Your runtime budget
+
+`deploy/base/deployment.yaml` sets this app's resources **explicitly**
+(50m CPU / 128Mi memory requested, **320Mi memory limit**) — larger than the
+platform LimitRange default (128Mi limit) because that default OOM-killed the
+pod under concurrent argon2 password hashing. The tenant quota ceiling per
+env is 500m CPU + 512Mi memory requests, 1Gi memory limits, 10 pods, so
+there's room to raise the limit further if a feature needs it.
+
+- The limit is enforced by an OOM-kill, so **memory-hungry work must be tuned
+  to fit** — password hashing (argon2id's library default is 64MiB *per
+  hash*), image processing, data frames. Prefer container-friendly
+  parameters + a concurrency cap over just raising the limit.
+- `pip install`-time dependency size is not the problem; **per-request memory
+  spikes are** what kill pods.
 
 ## Handle with care (the platform contract)
 
@@ -207,6 +239,25 @@ CI posts a non-blocking comment on any PR touching these paths (the
 `contract-watch` job) — that net exists for direct human edits; you should
 have warned before it fires.
 
+## Preview environments — the database is SHARED with staging
+
+Label a same-repo PR `preview` and the platform spins up an ephemeral copy at
+`https://todo-pr-<n>.nezam.site` (cap: 2 concurrent; fork PRs unsupported).
+Useful for showing UI work before merge. **But know this:**
+
+> **Previews run against the STAGING database** (platform ADR-024 — per-PR
+> databases don't exist yet; the preview namespace gets a COPY of staging's
+> `app-db` Secret, pointing at the same database). Migrations in a
+> `preview`-labeled PR run against live staging data BEFORE the PR is merged,
+> and every write a preview makes is visible in staging.
+
+Therefore:
+
+- **NEVER label a PR `preview` if it carries a migration** — you'd mutate
+  the staging schema from an unmerged branch.
+- Treat preview sessions as writing to staging (because they are). Don't
+  run destructive flows from a preview.
+
 ## Template version & upgrades (the upgrade skill)
 
 This app was scaffolded from a versioned platform template. The provenance
@@ -251,9 +302,10 @@ Run this when the user asks for an upgrade (or accepts your offer). Needs the
    - File diverged here → understand what the template change ACHIEVES and
      re-implement that intent in the current file. NEVER revert or overwrite
      user code to make a patch apply.
-   - Skip entirely: the `VERSION` file (template-repo metadata — this app
-     doesn't carry it) and any `newTag:` value changes in
-     `deploy/*/kustomization.yaml` (deploy churn; CI owns those values here).
+   - Skip entirely: the `VERSION` and `TEMPLATE.md` files (template-repo
+     metadata — this app doesn't carry them) and any `newTag:` value changes
+     in `deploy/*/kustomization.yaml` (deploy churn; CI owns those values
+     here).
    - `catalog-info.yaml`: do NOT copy the template's file — set
      `nezam.space/template-version` to the target tag (add
      `nezam.space/template-repo` if missing) and merge only genuinely NEW
@@ -283,24 +335,73 @@ Run this when the user asks for an upgrade (or accepts your offer). Needs the
   `cd backend && alembic revision -m "add my_table"` — a new file lands in
   `backend/alembic/versions/` next to `0001_create_app_meta.py`. Migrations
   run automatically on container start; keep them idempotent-safe.
-- **React components** go in `frontend/src/`. `App.jsx` is demo scaffolding —
-  replace it freely.
+- **React components** go in `frontend/src/`. Logic you want tested goes in
+  plain modules (like `src/format.js`) with tests in `src/__tests__/`.
 - **Keep the single Dockerfile building** — the frontend build stage and the
   python runtime stage must both stay green.
-- **Small, reviewable PRs.** One change per PR; explain it in the PR body so
-  the owner (who may not read code) can approve with confidence.
+- **Small, reviewable PRs.** One change per PR; explain it in plain language
+  in the PR body so the owner (who may not read code) can approve with
+  confidence.
+- **Prove config at write time.** Any endpoint that stores configuration
+  consumed later by a background job must prove it works in the same request
+  (one live probe → friendly 400 on failure) or expose `last_run_at` /
+  `last_error` in the API. Never save config the runtime hasn't demonstrated
+  it can use — "saved but silently dead" is a whole failure class (the prayer
+  automation shipped configured-but-dead twice before this rule).
+- **Adversarial review before merging a non-trivial PR.** While CI runs, do a
+  light find-then-try-to-refute pass focused on concurrency, external-API
+  assumptions (redirects, timeouts, shape changes), and permission gaps. Fix
+  confirmed findings in the same PR.
+
+## Security checklist (when you add auth or handle user input)
+
+Every item below is a bug class this app already had to get right — keep it
+that way when you touch auth or add user-facing input:
+
+- **argon2id tuned for the container** — an OWASP low-memory profile plus a
+  concurrency cap, never library defaults (64MiB per hash × concurrent
+  requests OOM-killed this pod once; the deployment now runs a 320Mi limit).
+- **Rate-limit on the RIGHTMOST `X-Forwarded-For` entry** — the gateway
+  appends the real client IP last; leftmost entries are client-spoofable.
+- **No login timing oracle** — when the username doesn't exist, verify a
+  dummy hash anyway so "user exists" and "wrong password" take the same time.
+- **Commit before responding** — never leave DB work to run after the
+  response is sent (phantom writes that vanish on error).
+- **Enforce session expiry server-side** — a rolling expiry must be checked
+  and refreshed in the DB, not just via cookie `max-age`.
+- **Origin-check middleware for state-changing requests** — with
+  `SameSite=Lax` cookies, rejecting mismatched `Origin` on
+  POST/PATCH/PUT/DELETE blocks cross-site form posts (see the
+  `csrf_origin_guard` middleware in `app/main.py`).
+- **Never leak raw errors** — generic client bodies, full tracebacks only in
+  server logs (the JSON-503 DB handlers already do this).
 
 ## Secrets & config
 
 - **Never commit secrets.** No credentials, tokens, or connection strings in
   the repo.
-- Database credentials and config arrive as **environment variables injected
-  by the platform** from the `app-db` Secret:
-  `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`. The backend reads
-  them in `_db_conninfo()` in `backend/app/main.py`. `APP_VERSION` is baked
-  into the image at build time.
-- Need new config? Read it from an env var (with a safe local default) and ask
-  the platform to inject it — don't hard-code values.
+- Database credentials arrive as **environment variables injected by the
+  platform** from the `app-db` Secret: `DB_HOST`, `DB_PORT`, `DB_NAME`,
+  `DB_USER`, `DB_PASSWORD`. The backend reads them in `_db_conninfo()` in
+  `backend/app/main.py`. `APP_VERSION` is baked into the image at build time.
+- **Need a NEW secret (API key, etc.)?** There is no self-service yet — the
+  **platform owner** adds it (stored encrypted in the platform repo, landing
+  as a Kubernetes Secret in this app's namespaces — that's how the VAPID
+  web-push keys got here). The flow that works:
+  1. Wire the env var now with `optional: true` so the app boots before the
+     secret exists and picks it up on the next restart (this app's VAPID keys
+     use exactly that pattern in `deploy/base/deployment.yaml`):
+     ```yaml
+     - name: MY_API_KEY
+       valueFrom:
+         secretKeyRef: { name: app-secrets, key: my-api-key, optional: true }
+     ```
+     In code, read it with a safe default and degrade gracefully (feature off
+     + clear log line) when unset.
+  2. Ask the owner to request the secret from the platform (key + value over a
+     private channel — **never** through git, a PR body, or an issue).
+- Non-secret config: env var with a safe local default, set in
+  `deploy/base/deployment.yaml`.
 
 ## Local dev + tests
 
@@ -321,15 +422,25 @@ docker build -t todo . && docker run -p 8080:8080 todo
 ```
 
 **Tests:** 115 backend (pytest, `backend/tests/`, real Postgres) + 16
-frontend (Vitest). CI runs both on every PR (`test` job with a Postgres
-service container) and the image build gates on them. Test deps live in
-`backend/requirements-dev.txt` — NOT in `requirements.txt` (they must not
-ship in the runtime image). Local loop:
+frontend (Vitest). CI runs both on every PR (`test` job with a Postgres **18**
+service container — same major as the platform's shared cluster) and the image
+build gates on them. Test deps live in `backend/requirements-dev.txt` — NOT in
+`requirements.txt` (they must not ship in the runtime image).
+
+**The one command** (starts the docker test Postgres, makes the venv,
+installs dev deps, runs pytest — extra args pass through to pytest):
+
+```sh
+./scripts/dev.sh            # backend tests
+./scripts/dev.sh --all      # + frontend tests + production build
+```
+
+Or the manual loop it wraps:
 
 ```sh
 # One-time: local test Postgres on :5433 (conftest defaults point at it)
 docker run -d --name todo-test-pg -p 5433:5432 -e POSTGRES_USER=todo \
-  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=todo_test postgres:16-alpine
+  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=todo_test postgres:18-alpine
 
 # One-time: venv (host python may lack venv — uv handles it)
 uv venv --python 3.12 .venv
@@ -345,17 +456,22 @@ cd frontend && npm run test -- --run && npm run build
 
 The owner may not be a developer. Work like this:
 
-1. Take their plain-English description of the change.
+1. Take their plain-English description of the change; capture it as a task
+   in `docs/ai-tasks/tasks/` (summary + context file).
 2. Read **this file** for the guardrails, then make the change in `backend/`,
-   `frontend/`, or `docs/`.
+   `frontend/`, or `docs/`. Add/extend tests for what you changed.
 3. Open a **Pull Request** (never push to `main` directly). Explain the change
-   in plain language in the PR body so the owner can approve confidently.
+   in plain language in the PR body so the owner can approve confidently. Run
+   the adversarial review pass while CI runs; fix findings in the same PR.
 4. After merge, staging deploys **automatically** (ADR-028 — gate
    suspended); verify `/api/version` == `main-<sha>` on
-   `https://todo-staging.nezam.site`, then tell the owner it's ready to try.
+   `https://todo-staging.nezam.site` (see "Deploy sharp edges" if it doesn't
+   arrive), then tell the owner it's ready to try.
 5. When they're happy on staging and say so, release with
    `gh workflow run release.yaml -f bump=patch|minor|major` to ship to
    `https://todo.nezam.site`.
+6. Move the task to `done/`, fill in its Result, and update
+   `docs/ai-tasks/context.md` — the files, not the chat, are what persists.
 
 Keep the owner in control: **nothing reaches production without their
 approval**, and you never edit deploy image tags by hand.
