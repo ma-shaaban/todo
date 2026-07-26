@@ -17,9 +17,9 @@ metadata:
     # app was scaffolded from. The portal catalog queries these; the AGENTS.md
     # upgrade skill reads template-version as the app's current level.
     # Backfilled by the template-upgrade skill: this app predates stamping
-    # (assumed v1.0.0 baseline), upgraded to v1.1.0.
+    # (assumed v1.0.0 baseline), upgraded v1.0.0 → v1.1.0 → v1.2.0.
     nezam.space/template-repo: nezam-org/template-fastapi-react
-    nezam.space/template-version: v1.1.0
+    nezam.space/template-version: v1.2.0
   links:
     # "Release to Production" button (ticket 038): opens the release workflow's
     # Run-workflow page — pick a bump, run, prod deploys (see

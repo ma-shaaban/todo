@@ -6,6 +6,8 @@ site_name: todo
 plugins:
   - techdocs-core
 
+# docs/ai-tasks/ (the AI's task board / project memory) is deliberately NOT
+# in the nav — it's internal working state, not owner documentation.
 nav:
   - What is todo?: index.md
   - How it works: how-it-works.md
